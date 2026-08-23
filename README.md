@@ -56,6 +56,19 @@ shows exactly what the server reports and nothing else. GPUs are the usual
 case. Whether a card's lighting works depends on OpenRGB's per-model support,
 not on this plugin, and a card OpenRGB learns later shows up here on its own.
 
+### Uninstall
+
+```bash
+omarchy plugin remove io.github.ilkaydnc.openrgb
+```
+
+That deletes the plugin folder and its entry in `~/.config/omarchy/shell.json`,
+which is the only file the plugin ever writes to, and only its own entry in
+it. Nothing else is touched. OpenRGB stays installed; remove it with
+`sudo pacman -R openrgb` if you no longer want it, and delete
+`~/.config/OpenRGB` for its own settings. If the plugin started an OpenRGB
+server in the current session, it exits with the shell.
+
 ### The SDK server
 
 The bar talks to OpenRGB's SDK server on `127.0.0.1:6742`. If nothing answers,
