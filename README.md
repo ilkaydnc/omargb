@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/9f925658-7a47-47d5-9acb-0de2783d4ae9
 ## Requirements
 
 - Omarchy 4 (the Quattro shell). This is a shell plugin, not a standalone app.
-- [OpenRGB](https://openrgb.org) 0.9 or newer, running as an SDK server.
+- [OpenRGB](https://openrgb.org) 0.9 or newer. The plugin offers to install it and starts its SDK server itself.
 - `python3`, which Omarchy already ships. The bridge has no other dependency.
 
 ## Install
@@ -37,14 +37,15 @@ https://github.com/user-attachments/assets/9f925658-7a47-47d5-9acb-0de2783d4ae9
 omarchy plugin add https://github.com/ilkaydnc/omargb.git --enable
 ```
 
-The widget lands in the bar's right section. Move it with
-`omarchy bar move io.github.ilkaydnc.omargb --section center`.
+That is the whole setup. The widget lands in the bar's right section; move it
+with `omarchy bar move io.github.ilkaydnc.omargb --section center`.
 
-`omarchy plugin add` only clones files. It never runs a package manager, so
-OpenRGB itself is a separate step. While OpenRGB is missing, the panel shows an
-Install OpenRGB button. It opens a terminal and runs the plugin's `setup`
-script, which calls `sudo pacman -S openrgb` and prompts for sudo in your own
-terminal. You can run the script by hand instead:
+OpenRGB is the one dependency, and the plugin takes care of it. When it is not
+installed yet, the panel says so and offers an Install OpenRGB button. That
+opens a terminal, installs the package through Omarchy's own package helper
+and loads `i2c-dev`; the sudo prompt is the usual one, in your own terminal.
+Nothing has to happen before the plugin is enabled. If you would rather do it
+yourself:
 
 ```bash
 ~/.config/omarchy/plugins/io.github.ilkaydnc.omargb/setup
