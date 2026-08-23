@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "io.github.ilkaydnc.openrgb",
-  "name": "OpenRGB",
+  "name": "Lighting",
   "version": "0.2.0",
   "author": "Ilkay Dinc",
   "license": "MIT",
-  "description": "Device lighting from the Omarchy bar: per-device mode, color, brightness and speed through OpenRGB, mirroring changes made elsewhere, with theme-accent sync and a stealth switch.",
+  "description": "RGB lighting from the Omarchy bar, following your theme. Every device OpenRGB sees, with mode, color, brightness and speed; stealth mode; changes made elsewhere mirrored.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,8 +15,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "OpenRGB",
-    "description": "Colors, modes, brightness and speed for every device OpenRGB sees, with theme-accent sync, per-device power and a stealth switch.",
+    "displayName": "Lighting",
+    "description": "Your RGB hardware on the theme accent, plus per-device mode, color, brightness, speed and power, and a stealth switch. Through OpenRGB.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",

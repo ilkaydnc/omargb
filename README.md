@@ -1,20 +1,23 @@
-# OpenRGB for the Omarchy bar
+# Lighting
 
-A dot in the Omarchy bar shows what color your hardware is lit right now.
-Click it and you get a panel listing every device OpenRGB can see, with its
-mode, color, brightness and speed. Keyboards, mice, mouse mats, motherboards,
-RAM, GPUs, strips, whatever OpenRGB supports.
+RGB lighting from the Omarchy bar, following your theme. Switch themes and
+the keyboard, the board, the strips switch with it. Built on
+[OpenRGB](https://openrgb.org).
+
+A dot in the bar shows what color your hardware is lit right now. Click it
+and you get a panel listing every device OpenRGB can see, with its mode,
+color, brightness and speed. Keyboards, mice, mouse mats, motherboards, RAM,
+GPUs, strips, whatever OpenRGB supports.
 
 The panel mirrors the server instead of only sending to it. Change a color
 from the OpenRGB app, a game, or any other SDK client and the bar catches up
 within a couple of seconds.
 
-Two things I wanted badly enough to build this for. A switch that keeps all
-the lighting on the theme's accent, so switching Omarchy themes recolors the
-desk too. And stealth mode, which turns every light off with one click and
-remembers what each device had, mode and color, so switching back puts it
-all back. Each device also has its own power button, for when only the
-keyboard should go dark.
+Two things I wanted badly enough to build this for. The theme switch above,
+which keeps all the lighting on the theme's accent. And stealth mode, which
+turns every light off with one click and remembers what each device had,
+mode and color, so switching back puts it all back. Each device also has its
+own power button, for when only the keyboard should go dark.
 
 ![preview](preview.png)
 

@@ -139,8 +139,8 @@ Panel {
   }
 
   readonly property string tooltip: connected
-    ? "OpenRGB · " + Model.plural(devices.length, "device")
-    : "OpenRGB · " + (service && service.serverStarting ? "starting server" : "not connected")
+    ? "Lighting · " + Model.plural(devices.length, "device")
+    : "Lighting · " + (service && service.serverStarting ? "starting server" : "not connected")
 
   // ---- Settings plumbing -------------------------------------------------
 
@@ -416,7 +416,7 @@ Panel {
           // switch, in the same seat audio's mute-all occupies: checked means
           // something is lit, so switching it off reads as stealth.
           PanelHero {
-            title: "OpenRGB"
+            title: "Lighting"
             meta: root.heroStatus
             foreground: root.fg
             fontFamily: root.fontFamily
