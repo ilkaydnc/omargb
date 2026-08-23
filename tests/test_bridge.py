@@ -250,6 +250,81 @@ class PollTest(unittest.TestCase):
         self.assertEqual(self.states(), [])
 
 
+class HostileServerTest(unittest.TestCase):
+    """Whoever binds the port first is the server. Its headers are claims,
+    not instructions: a declared size or count must not drive allocation."""
+
+    def serve(self, handler):
+        import socket, struct, threading
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        def run():
+            conn, _ = listener.accept()
+            try:
+                handler(conn)
+            finally:
+                conn.close()
+                listener.close()
+
+        threading.Thread(target=run, daemon=True).start()
+        return listener.getsockname()[1]
+
+    @staticmethod
+    def read_header(conn):
+        buf = b""
+        while len(buf) < bridge.HEADER.size:
+            chunk = conn.recv(bridge.HEADER.size - len(buf))
+            if not chunk:
+                raise ConnectionError
+            buf += chunk
+        return bridge.HEADER.unpack(buf)
+
+    def test_huge_packet_header_is_refused(self):
+        def handler(conn):
+            # Reply to the version request with a header announcing 4 GiB.
+            _, dev, pkt, size = self.read_header(conn)
+            conn.recv(size)
+            conn.sendall(bridge.HEADER.pack(bridge.MAGIC, 0, pkt, 0xFFFFFFFF))
+            # Then feed it bytes for a while: a bridge without a ceiling would
+            # keep reading, and this test would hang instead of returning.
+            try:
+                for _ in range(64):
+                    conn.sendall(b"\0" * 65536)
+            except OSError:
+                pass
+
+        port = self.serve(handler)
+        br = bridge.Bridge("127.0.0.1", port, 4)
+        with self.assertRaises(bridge.ProtocolError) as caught:
+            br.connect()
+        self.assertIn("ceiling", str(caught.exception))
+        self.assertFalse(br.connected)
+
+    def test_absurd_device_count_is_refused(self):
+        def handler(conn):
+            import struct
+            while True:
+                try:
+                    _, dev, pkt, size = self.read_header(conn)
+                except ConnectionError:
+                    return
+                if size:
+                    conn.recv(size)
+                if pkt == bridge.PKT_REQUEST_PROTOCOL_VERSION:
+                    conn.sendall(bridge.HEADER.pack(bridge.MAGIC, 0, pkt, 4) + struct.pack("<I", 4))
+                elif pkt == bridge.PKT_REQUEST_CONTROLLER_COUNT:
+                    conn.sendall(bridge.HEADER.pack(bridge.MAGIC, 0, pkt, 4) + struct.pack("<I", 50_000_000))
+
+        port = self.serve(handler)
+        br = bridge.Bridge("127.0.0.1", port, 4)
+        with self.assertRaises(bridge.ProtocolError) as caught:
+            br.connect()
+        self.assertIn("ceiling", str(caught.exception))
+        self.assertEqual(br.devices, [])
+
+
 class CoalesceTest(unittest.TestCase):
     def test_keeps_last_slider_update_per_device(self):
         cmds = [

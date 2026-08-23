@@ -124,6 +124,13 @@ COLOR_MODE_PREFERENCE = ("static", "direct", "custom")
 POLL_INTERVAL = 2.0
 POLL_WRITE_HOLDOFF = 1.0
 
+# Ceilings on what the peer may make this process allocate or loop over. The
+# bridge runs unsandboxed and the port is only as trustworthy as whoever bound
+# it first, so a packet header or device count is a claim, not an instruction.
+# A controller with thousands of LEDs serializes to well under 1 MiB.
+MAX_PACKET_SIZE = 4 * 1024 * 1024
+MAX_DEVICES = 256
+
 
 class ProtocolError(Exception):
     pass
@@ -452,6 +459,8 @@ class Bridge:
         magic, dev_idx, pkt_id, size = HEADER.unpack(self.recv_exact(HEADER.size))
         if magic != MAGIC:
             raise ProtocolError("bad packet magic %r" % (magic,))
+        if size > MAX_PACKET_SIZE:
+            raise ProtocolError("refusing a %d byte packet (ceiling %d)" % (size, MAX_PACKET_SIZE))
         payload = self.recv_exact(size) if size else b""
         return dev_idx, pkt_id, payload
 
@@ -540,9 +549,17 @@ class Bridge:
         dev.update(summarize_colors(dev))
         return dev
 
-    def refresh_all(self):
+    def device_count(self):
         data = self.request(0, PKT_REQUEST_CONTROLLER_COUNT, expect=PKT_REQUEST_CONTROLLER_COUNT)
+        if len(data) < 4:
+            raise ProtocolError("truncated controller count")
         count = struct.unpack("<I", data[:4])[0]
+        if count > MAX_DEVICES:
+            raise ProtocolError("refusing to enumerate %d devices (ceiling %d)" % (count, MAX_DEVICES))
+        return count
+
+    def refresh_all(self):
+        count = self.device_count()
         self.devices = [self.fetch_device(i) for i in range(count)]
         self.dirty = False
         self.failures = 0
@@ -590,8 +607,7 @@ class Bridge:
         here within a couple of seconds. Comparing against the last published
         state keeps the shell quiet for the overwhelmingly common no-change
         case."""
-        data = self.request(0, PKT_REQUEST_CONTROLLER_COUNT, expect=PKT_REQUEST_CONTROLLER_COUNT)
-        count = struct.unpack("<I", data[:4])[0]
+        count = self.device_count()
         self.devices = [self.fetch_device(i) for i in range(count)]
         fresh = json.dumps([public_device(d) for d in self.devices], sort_keys=True)
         if fresh != self._published:
