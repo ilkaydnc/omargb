@@ -18,6 +18,10 @@ keyboard should go dark.
 
 ![preview](preview.png)
 
+A minute of it in use, including a theme switch recoloring the hardware:
+
+https://github.com/user-attachments/assets/9f925658-7a47-47d5-9acb-0de2783d4ae9
+
 ## Requirements
 
 - Omarchy 4 (the Quattro shell). This is a shell plugin, not a standalone app.
