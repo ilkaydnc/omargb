@@ -16,8 +16,8 @@ import "Model.js" as Model
 // stealth mode, r refreshes, s saves the selected device's mode, Esc closes.
 Panel {
   id: root
-  moduleName: "io.github.ilkaydnc.openrgb"
-  ipcTarget: "openrgb"
+  moduleName: "io.github.ilkaydnc.omargb"
+  ipcTarget: "omargb"
   manageIpc: false
 
   readonly property var service: (bar && bar.shell && typeof bar.shell.serviceFor === "function")
@@ -139,8 +139,8 @@ Panel {
   }
 
   readonly property string tooltip: connected
-    ? "Lighting · " + Model.plural(devices.length, "device")
-    : "Lighting · " + (service && service.serverStarting ? "starting server" : "not connected")
+    ? "OmaRGB · " + Model.plural(devices.length, "device")
+    : "OmaRGB · " + (service && service.serverStarting ? "starting server" : "not connected")
 
   // ---- Settings plumbing -------------------------------------------------
 
@@ -319,7 +319,7 @@ Panel {
   implicitHeight: button.implicitHeight
 
   IpcHandler {
-    target: "openrgb"
+    target: "omargb"
 
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -416,7 +416,7 @@ Panel {
           // switch, in the same seat audio's mute-all occupies: checked means
           // something is lit, so switching it off reads as stealth.
           PanelHero {
-            title: "Lighting"
+            title: "OmaRGB"
             meta: root.heroStatus
             foreground: root.fg
             fontFamily: root.fontFamily

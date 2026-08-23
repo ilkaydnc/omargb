@@ -1,8 +1,8 @@
-# Lighting
+# OmaRGB
 
 RGB lighting from the Omarchy bar, following your theme. Switch themes and
 the keyboard, the board, the strips switch with it. Built on
-[OpenRGB](https://openrgb.org).
+[OpenRGB](https://openrgb.org). A community plugin, not part of Omarchy itself.
 
 A dot in the bar shows what color your hardware is lit right now. Click it
 and you get a panel listing every device OpenRGB can see, with its mode,
@@ -34,11 +34,11 @@ https://github.com/user-attachments/assets/9f925658-7a47-47d5-9acb-0de2783d4ae9
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/ilkaydnc/omarchy-openrgb.git --enable
+omarchy plugin add https://github.com/ilkaydnc/omargb.git --enable
 ```
 
 The widget lands in the bar's right section. Move it with
-`omarchy bar move io.github.ilkaydnc.openrgb --section center`.
+`omarchy bar move io.github.ilkaydnc.omargb --section center`.
 
 `omarchy plugin add` only clones files. It never runs a package manager, so
 OpenRGB itself is a separate step. While OpenRGB is missing, the panel shows an
@@ -47,7 +47,7 @@ script, which calls `sudo pacman -S openrgb` and prompts for sudo in your own
 terminal. You can run the script by hand instead:
 
 ```bash
-~/.config/omarchy/plugins/io.github.ilkaydnc.openrgb/setup
+~/.config/omarchy/plugins/io.github.ilkaydnc.omargb/setup
 # or just: sudo pacman -S openrgb
 ```
 
@@ -66,7 +66,7 @@ not on this plugin, and a card OpenRGB learns later shows up here on its own.
 ### Uninstall
 
 ```bash
-omarchy plugin remove io.github.ilkaydnc.openrgb
+omarchy plugin remove io.github.ilkaydnc.omargb
 ```
 
 That deletes the plugin folder and its entry in `~/.config/omarchy/shell.json`,
@@ -144,23 +144,23 @@ toggles stealth mode, `r` refreshes, `s` saves the selected device's mode,
 
 ### Scripting
 
-The widget registers the `openrgb` IPC target, so keybindings and scripts can
+The widget registers the `omargb` IPC target, so keybindings and scripts can
 drive it:
 
 ```bash
-omarchy-shell openrgb toggle
-omarchy-shell openrgb setAll '#ff4000'
-omarchy-shell openrgb applyAccent
-omarchy-shell openrgb themeSync true
-omarchy-shell openrgb stealth true
-omarchy-shell openrgb toggleStealth
-omarchy-shell openrgb refresh
+omarchy-shell omargb toggle
+omarchy-shell omargb setAll '#ff4000'
+omarchy-shell omargb applyAccent
+omarchy-shell omargb themeSync true
+omarchy-shell omargb stealth true
+omarchy-shell omargb toggleStealth
+omarchy-shell omargb refresh
 ```
 
 The bridge works on its own too. To dump what OpenRGB reports:
 
 ```bash
-python3 ~/.config/omarchy/plugins/io.github.ilkaydnc.openrgb/bridge/openrgb_bridge.py --once
+python3 ~/.config/omarchy/plugins/io.github.ilkaydnc.omargb/bridge/openrgb_bridge.py --once
 ```
 
 ## When a zone paints the wrong color
@@ -228,11 +228,11 @@ slider being dragged. I found that one the hard way.
 ## Development
 
 ```bash
-git clone https://github.com/ilkaydnc/omarchy-openrgb.git
-cd omarchy-openrgb
+git clone https://github.com/ilkaydnc/omargb.git
+cd omargb
 dev/sync            # copy into ~/.config/omarchy/plugins/<id>/ and hot-reload
 dev/sync --watch    # keep doing that on every save
-omarchy plugin enable io.github.ilkaydnc.openrgb right
+omarchy plugin enable io.github.ilkaydnc.omargb right
 
 python3 -m unittest discover -s tests     # bridge tests against a mock server
 python3 tests/mock_server.py              # fake OpenRGB on :6742, for UI work without hardware
