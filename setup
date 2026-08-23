@@ -1,0 +1,35 @@
+#!/bin/bash
+# `omarchy plugin add` only clones files — by design it never runs package
+# managers or sudo. This script is the rest of the install: it puts OpenRGB on
+# the system so the bar widget has something to talk to. Run it yourself, or
+# press "Install OpenRGB" in the widget's panel (which runs exactly this in a
+# floating terminal).
+
+set -euo pipefail
+
+echo "Installing OpenRGB…"
+# Interactive sudo prompt happens here, in your terminal — the plugin itself
+# never holds elevated rights.
+omarchy-pkg-add openrgb
+
+# Installing the package fires pacman's udev hook, which reloads and re-triggers
+# the rules OpenRGB ships (/usr/lib/udev/rules.d/60-openrgb.rules), so USB
+# devices become reachable without a replug or reboot.
+
+# Motherboard and RAM lighting travels over SMBus, which needs the i2c-dev
+# module. The package drops a modules-load.d entry that loads it on the next
+# boot; load it now too so those devices show up in this session. Best-effort:
+# a machine with only USB lighting does not need it.
+if ! lsmod | grep -q '^i2c_dev'; then
+  echo
+  echo "Loading i2c-dev for motherboard/RAM lighting (optional)…"
+  sudo modprobe i2c-dev || true
+fi
+
+echo
+echo "OpenRGB is installed. The bar widget starts its own SDK server, so the"
+echo "panel should connect on its own within a few seconds."
+echo
+echo "See what OpenRGB detects:   openrgb --list-devices"
+echo "Some motherboards need the 'acpi_enforce_resources=lax' kernel parameter"
+echo "for SMBus devices — check the OpenRGB wiki for your board before adding it."

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Copy the working tree into the shell's plugin directory and hot-reload it.
+#
+# The shell only loads plugins from ~/.config/omarchy/plugins/<id>/ and the
+# validator refuses symlinks there, so development happens in this repo and
+# `dev/sync` mirrors it across. Pass --watch to keep syncing on every save.
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+id=$(jq -r .id "$repo/manifest.json")
+target="${OMARCHY_PLUGIN_DIR:-$HOME/.config/omarchy/plugins}/$id"
+
+sync_once() {
+  mkdir -p "$target"
+  rsync -a --delete \
+    --exclude .git --exclude dev --exclude tests --exclude '__pycache__' \
+    --exclude '*.pyc' --exclude .gitignore \
+    "$repo/" "$target/"
+  omarchy-shell -q shell rescanPlugins
+  echo "synced -> $target"
+}
+
+sync_once
+
+if [[ ${1:-} == "--watch" ]]; then
+  command -v inotifywait >/dev/null || { echo "inotifywait is required for --watch" >&2; exit 1; }
+  echo "watching $repo (Ctrl-C to stop)"
+  while inotifywait -qq -r -e modify,create,delete,move --exclude '(\.git|__pycache__)' "$repo"; do
+    sleep 0.2
+    sync_once
+  done
+fi
