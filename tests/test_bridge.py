@@ -203,6 +203,89 @@ class QuietFrameTest(unittest.TestCase):
         br.close()
 
 
+class DeviceAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.server = MockServer().start()
+        self.br = bridge.Bridge("127.0.0.1", self.server.port, 4)
+        self.br.connect()
+
+    def tearDown(self):
+        self.br.close()
+        self.server.stop()
+
+    def make_hub(self):
+        dev = self.br.devices[0]
+        dev["name"] = "Lian Li Uni Hub - SL"
+        dev["version"] = "v1.8"
+        dev["serial"] = "6243168001"
+        dev["modes"][0]["name"] = "Custom"
+        dev["modes"][0]["value"] = 1
+        dev["modes"][0]["brightnessMin"] = 0
+        dev["modes"][0]["brightnessMax"] = 4
+        dev["modes"][0]["brightness"] = 4
+        dev["zones"] = [
+            {"ledsCount": 3}, {"ledsCount": 3},
+            {"ledsCount": 0}, {"ledsCount": 0},
+        ]
+        dev["ledCount"] = 6
+        dev["_colors"] = ["#000000"] * 6
+        return dev
+
+    def test_lian_li_sl_v18_keeps_custom_and_uses_native_writer(self):
+        dev = self.make_hub()
+        packets = []
+        self.br.send = lambda _device, packet, _payload=b"": packets.append(packet)
+        direct = []
+        self.br.apply_hardware_adapter = lambda device, full=True: direct.append((device, full))
+
+        self.br.set_color(dev, "#e85046")
+
+        self.assertEqual(dev["activeMode"], 0)
+        self.assertEqual(dev["_colors"], ["#e85046"] * 6)
+        self.assertEqual(packets, [bridge.PKT_RGBCONTROLLER_UPDATELEDS])
+        self.assertEqual(direct, [(dev, True)])
+
+    def test_regular_per_led_device_stays_on_sdk_only(self):
+        dev = self.br.devices[0]
+        packets = []
+        self.br.send = lambda _device, packet, _payload=b"": packets.append(packet)
+
+        self.br.set_color(dev, "#e85046")
+
+        self.assertEqual(packets, [bridge.PKT_RGBCONTROLLER_UPDATELEDS])
+
+    def test_native_packets_cover_every_fan_with_rbg_color(self):
+        dev = self.make_hub()
+        dev["_colors"] = ["#112233"] * 6
+
+        packets = bridge.LianLiUniHubSLV18.packets(dev)
+
+        self.assertEqual(len(packets), 13)
+        self.assertEqual(packets[0][:4], bytes((0xE0, 0x10, 0x32, 0x03)))
+        self.assertEqual(packets[1][:4], bytes((0xE0, 0x10, 0x32, 0x13)))
+        self.assertEqual(packets[4][:3], bytes((0xE0, 0x10, 0x34)))
+        color_packets = [packet for packet in packets if len(packet) == 194]
+        self.assertEqual(len(color_packets), 4)
+        self.assertEqual(color_packets[0][:8], bytes((0xE0, 0x30, 0x11, 0x33, 0x22, 0x11, 0x33, 0x22)))
+        self.assertEqual(color_packets[0][2:2 + 3 * 16], bytes((0x11, 0x33, 0x22)) * 16)
+        self.assertEqual(color_packets[0][2 + 3 * 16:2 + 3 * 32], bytes((0x11, 0x33, 0x22)) * 16)
+        self.assertEqual(color_packets[0][2 + 3 * 32:2 + 3 * 48], bytes((0x11, 0x33, 0x22)) * 16)
+
+    def test_native_brightness_zero_uses_hub_off_code(self):
+        dev = self.make_hub()
+        dev["_colors"] = ["#e85046"] * 6
+        dev["modes"][0]["brightness"] = 0
+
+        packets = bridge.LianLiUniHubSLV18.packets(dev)
+
+        mode_packets = [packet for packet in packets if len(packet) == 11 and packet[1] in range(0x10, 0x14)
+                        and packet[2] == 1]
+        self.assertEqual(len(mode_packets), 4)
+        self.assertTrue(all(packet[5] == 0x08 for packet in mode_packets))
+        color_packets = [packet for packet in packets if len(packet) == 194]
+        self.assertTrue(all(set(packet[2:]) == {0} for packet in color_packets))
+
+
 class PollTest(unittest.TestCase):
     """The change poll is what makes the panel a mirror rather than a one-way
     remote: writes from other clients show up with no server notification."""

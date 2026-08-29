@@ -45,6 +45,7 @@ Commands (stdin), all optionally carrying an "id" echoed in the result:
 import argparse
 import collections
 import errno
+import glob
 import json
 import os
 import select
@@ -395,6 +396,166 @@ def zone_leds_payload(zone_idx, colors):
     return struct.pack("<I", len(body) + 4) + body
 
 
+class LianLiUniHubSLV18:
+    """Native writer for the broken OpenRGB SL v1.8 color path.
+
+    OpenRGB still owns discovery and the public SDK state.  This adapter only
+    mirrors the final state to the hub's HID interface after the SDK has
+    accepted it.  The scope is deliberately exact: other Lian Li generations
+    use different report layouts.
+    """
+
+    HID_ID = "0003:00000CF2:0000A100"
+    REPORT_ID = 0xE0
+    CHANNELS = 4
+    FANS_PER_CHANNEL = 4
+    LEDS_PER_FAN = 16
+    LEDS_PER_CHANNEL = FANS_PER_CHANNEL * LEDS_PER_FAN
+    BRIGHTNESS = {0: 0x08, 1: 0x03, 2: 0x02, 3: 0x01, 4: 0x00}
+    SPEED = {0: 0x02, 1: 0x01, 2: 0x00, 3: 0xFF, 4: 0xFE}
+
+    @classmethod
+    def supports(cls, dev):
+        return (dev.get("name") == "Lian Li Uni Hub - SL"
+                and dev.get("version") == "v1.8")
+
+    @staticmethod
+    def _uevent(path):
+        values = {}
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    key, sep, value = line.rstrip("\n").partition("=")
+                    if sep:
+                        values[key] = value
+        except OSError:
+            pass
+        return values
+
+    @classmethod
+    def resolve_path(cls, dev):
+        """Resolve the current node instead of trusting OpenRGB's stale path.
+
+        hidraw numbers change after a USB reset.  OpenRGB keeps reporting the
+        path it opened at startup even when the hub has re-enumerated under a
+        new number, which is a common reason its SDK appears to accept writes
+        that never reach this controller.
+        """
+        serial = str(dev.get("serial") or "")
+        for uevent_path in sorted(glob.glob("/sys/class/hidraw/hidraw*/device/uevent")):
+            values = cls._uevent(uevent_path)
+            if values.get("HID_ID", "").upper() != cls.HID_ID:
+                continue
+            if serial and values.get("HID_UNIQ", "") not in ("", serial):
+                continue
+            node = "/dev/" + uevent_path.split("/")[-3]
+            if os.path.exists(node):
+                return node
+        raise CommandError("Lian Li Uni Hub - SL v1.8 is not available through hidraw; reconnect the hub")
+
+    @staticmethod
+    def _packet(*values):
+        return bytes(values) + bytes(11 - len(values))
+
+    @classmethod
+    def _brightness_scale(cls, mode):
+        maximum = int(mode.get("brightnessMax", 0))
+        if maximum <= 0:
+            return 1.0
+        return max(0.0, min(1.0, float(mode.get("brightness", maximum)) / maximum))
+
+    @classmethod
+    def _rgb_bytes(cls, color, scale):
+        r, g, b = parse_hex(color)
+        # This hub's HID protocol is R-B-G, unlike OpenRGB's SDK RGBColor.
+        return bytes((int(r * scale), int(b * scale), int(g * scale)))
+
+    @classmethod
+    def _zone_colors(cls, dev, channel):
+        zones = dev.get("zones", [])
+        count = int(zones[channel].get("ledsCount", 0)) if channel < len(zones) else 0
+        start = sum(int(z.get("ledsCount", 0)) for z in zones[:channel])
+        colors = list(dev.get("_colors", [])[start:start + count])
+        fallback = dev.get("color") or "#ffffff"
+        while len(colors) < count:
+            colors.append(colors[-1] if colors else fallback)
+        return colors[:cls.FANS_PER_CHANNEL]
+
+    @classmethod
+    def _color_report(cls, dev, mode, channel):
+        data = bytearray(cls.LEDS_PER_CHANNEL * 3)
+        scale = cls._brightness_scale(mode)
+        color_mode = int(mode.get("colorMode", MODE_COLORS_NONE))
+        if color_mode == MODE_COLORS_PER_LED:
+            for fan, color in enumerate(cls._zone_colors(dev, channel)):
+                encoded = cls._rgb_bytes(color, scale)
+                for led in range(cls.LEDS_PER_FAN):
+                    offset = (fan * cls.LEDS_PER_FAN + led) * 3
+                    data[offset:offset + 3] = encoded
+        elif color_mode == MODE_COLORS_MODE_SPECIFIC:
+            for index, color in enumerate(list(mode.get("colors", []))[:cls.FANS_PER_CHANNEL]):
+                offset = index * 3
+                data[offset:offset + 3] = cls._rgb_bytes(color, scale)
+        return bytes((cls.REPORT_ID, 0x30 + channel)) + bytes(data)
+
+    @classmethod
+    def _mode_report(cls, mode, channel):
+        speed = cls.SPEED.get(int(mode.get("speed", 0)), 0x00)
+        brightness = cls.BRIGHTNESS.get(int(mode.get("brightness", 4)), 0x00)
+        direction = 0x01 if int(mode.get("direction", 0)) == 1 else 0x00
+        return cls._packet(cls.REPORT_ID, 0x10 + channel, int(mode.get("value", 1)),
+                           speed, direction, brightness)
+
+    @classmethod
+    def packets(cls, dev, full=True):
+        mode_index = int(dev.get("activeMode", -1))
+        modes = dev.get("modes", [])
+        if not 0 <= mode_index < len(modes):
+            raise CommandError("Lian Li Uni Hub - SL has no active mode")
+        mode = modes[mode_index]
+        zones = dev.get("zones", [])
+        merged = "merged" in str(mode.get("name", "")).lower()
+        packets = []
+        if full:
+            for channel in range(cls.CHANNELS):
+                count = int(zones[channel].get("ledsCount", 0)) if channel < len(zones) else 0
+                packets.append(cls._packet(cls.REPORT_ID, 0x10, 0x32,
+                                           0x10 * channel + min(count, cls.FANS_PER_CHANNEL)))
+            if merged:
+                packets.append(cls._packet(cls.REPORT_ID, 0x10, 0x33, 0x00, 0x01, 0x02, 0x03, 0x08))
+            else:
+                packets.append(cls._packet(cls.REPORT_ID, 0x10, 0x34))
+
+        channels = [0] if merged else list(range(cls.CHANNELS))
+        for channel in channels:
+            count = int(zones[channel].get("ledsCount", 0)) if channel < len(zones) else 0
+            if not full and count == 0:
+                continue
+            packets.append(cls._color_report(dev, mode, channel))
+            packets.append(cls._mode_report(mode, channel))
+        return packets
+
+    @classmethod
+    def write(cls, dev, full=True):
+        path = cls.resolve_path(dev)
+        flags = os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path, flags)
+            try:
+                for packet in cls.packets(dev, full=full):
+                    written = os.write(fd, packet)
+                    if written != len(packet):
+                        raise OSError("short HID write (%d of %d bytes)" % (written, len(packet)))
+                    time.sleep(0.005)
+            finally:
+                os.close(fd)
+        except PermissionError:
+            raise CommandError("permission denied writing %s; reinstall the OpenRGB udev rules" % path)
+        except OSError as e:
+            raise CommandError("cannot write Lian Li Uni Hub - SL at %s: %s" % (path, e))
+        return path
+
+
 def public_device(dev):
     return {k: v for k, v in dev.items() if not k.startswith("_")}
 
@@ -423,6 +584,7 @@ class Bridge:
         self.last_write = 0.0
         self.last_poll = 0.0
         self._published = None
+        self._lian_li_ready = set()
 
     # ------------------------------------------------------------ transport
 
@@ -532,6 +694,7 @@ class Bridge:
                 pass
         self.sock = None
         self.dirty = False
+        self._lian_li_ready.clear()
 
     def drop(self, reason):
         self.close()
@@ -666,19 +829,34 @@ class Bridge:
         if mode["colorMode"] == MODE_COLORS_PER_LED and color is not None and dev["ledCount"]:
             self.send(dev["index"], PKT_RGBCONTROLLER_UPDATELEDS,
                       leds_payload([color] * dev["ledCount"]))
+            dev["_colors"] = [color] * dev["ledCount"]
 
-    def set_color(self, dev, color, zone=None):
+    def apply_hardware_adapter(self, dev, full=True):
+        if not LianLiUniHubSLV18.supports(dev):
+            return
+        # The SDK has no acknowledgement for writes.  A later request on the
+        # same TCP stream is the ordering barrier that guarantees OpenRGB's
+        # broken short HID write is finished before our complete one.
+        self.request(0, PKT_REQUEST_CONTROLLER_COUNT,
+                     expect=PKT_REQUEST_CONTROLLER_COUNT)
+        path = LianLiUniHubSLV18.resolve_path(dev)
+        full = full or path not in self._lian_li_ready
+        path = LianLiUniHubSLV18.write(dev, full=full)
+        self._lian_li_ready.add(path)
+        self.last_write = time.monotonic()
+
+    def set_color(self, dev, color, zone=None, direct_full=True):
         mode = self.active_mode(dev)
         if not mode["acceptsColor"]:
             target = self.pick_color_mode(dev)
             self.apply_mode(dev, target, color)
-            return
-        if mode["colorMode"] == MODE_COLORS_PER_LED:
+        elif mode["colorMode"] == MODE_COLORS_PER_LED:
             if zone is None:
                 if not dev["ledCount"]:
                     raise CommandError("%s has no LEDs" % dev["name"])
                 self.send(dev["index"], PKT_RGBCONTROLLER_UPDATELEDS,
                           leds_payload([color] * dev["ledCount"]))
+                dev["_colors"] = [color] * dev["ledCount"]
             else:
                 zone = int(zone)
                 if not 0 <= zone < len(dev["zones"]):
@@ -686,8 +864,11 @@ class Bridge:
                 count = dev["zones"][zone]["ledsCount"]
                 self.send(dev["index"], PKT_RGBCONTROLLER_UPDATEZONELEDS,
                           zone_leds_payload(zone, [color] * count))
+                start = sum(z["ledsCount"] for z in dev["zones"][:zone])
+                dev["_colors"][start:start + count] = [color] * count
         else:
             self.apply_mode(dev, mode, color)
+        self.apply_hardware_adapter(dev, full=direct_full)
 
     def set_mode(self, dev, mode_index, color=None):
         try:
@@ -697,6 +878,7 @@ class Bridge:
         if not 0 <= mode_index < len(dev["modes"]):
             raise CommandError("no mode %d on %s" % (mode_index, dev["name"]))
         self.apply_mode(dev, dev["modes"][mode_index], color)
+        self.apply_hardware_adapter(dev, full=True)
 
     def set_mode_field(self, dev, field, value, lo_key, hi_key, flag_key):
         mode = self.active_mode(dev)
@@ -712,6 +894,8 @@ class Bridge:
         mode = dict(mode)
         mode[field] = value
         self.send_mode(dev, mode)
+        dev["modes"][mode["index"]] = mode
+        self.apply_hardware_adapter(dev, full=True)
 
     def save_device(self, dev):
         mode = self.active_mode(dev)
@@ -774,7 +958,7 @@ class Bridge:
             errors = []
             for dev in list(self.devices):
                 try:
-                    self.set_color(dev, color)
+                    self.set_color(dev, color, direct_full=not quiet)
                 except CommandError as e:
                     errors.append(str(e))
             # A slider drag streams colors dozens of times a second.
@@ -800,7 +984,7 @@ class Bridge:
         dev = self.device(cmd.get("device"))
         if op == "set_color":
             color = to_hex(*parse_hex(cmd.get("color")))
-            self.set_color(dev, color, cmd.get("zone"))
+            self.set_color(dev, color, cmd.get("zone"), direct_full=not quiet)
         elif op == "set_mode":
             color = cmd.get("color")
             self.set_mode(dev, cmd.get("mode"), to_hex(*parse_hex(color)) if color else None)
