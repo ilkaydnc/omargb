@@ -112,6 +112,81 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.server.devices[1]["colors"], ["#abcdef"] * 6)
         self.assertEqual([d["color"] for d in state["devices"]], ["#abcdef", "#abcdef"])
 
+    def test_set_all_brightness_scales_direct_leds(self):
+        state, code = self.once(
+            {"op": "set_color", "device": 0, "color": "#ff0000"},
+            {"op": "set_color", "device": 1, "color": "#00ff00"},
+            {"op": "set_all_brightness", "value": 50},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#800000"] * 6)
+        self.assertEqual(self.server.devices[1]["colors"], ["#008000"] * 6)
+        # The panel keeps the logical color; the LEDs are what dimmed.
+        self.assertEqual(state["devices"][0]["color"], "#ff0000")
+        self.assertEqual(state["devices"][1]["color"], "#00ff00")
+
+    def test_set_all_brightness_is_not_applied_twice(self):
+        state, code = self.once(
+            {"op": "set_color", "device": 0, "color": "#ff0000"},
+            {"op": "set_all_brightness", "value": 50},
+            {"op": "set_all_brightness", "value": 50},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#800000"] * 6)
+        self.assertEqual(state["devices"][0]["color"], "#ff0000")
+
+    def test_set_all_brightness_restores_at_full(self):
+        state, code = self.once(
+            {"op": "set_color", "device": 0, "color": "#ff0000"},
+            {"op": "set_all_brightness", "value": 50},
+            {"op": "set_all_brightness", "value": 100},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#ff0000"] * 6)
+        self.assertEqual(state["devices"][0]["color"], "#ff0000")
+
+    def test_set_color_while_dimmed_uses_logical_color(self):
+        state, code = self.once(
+            {"op": "set_all_brightness", "value": 50},
+            {"op": "set_color", "device": 0, "color": "#00ff00"},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#008000"] * 6)
+        self.assertEqual(state["devices"][0]["color"], "#00ff00")
+
+    def test_set_all_brightness_hardware_mode(self):
+        state, code = self.once(
+            {"op": "set_mode", "device": 0, "mode": 1, "color": "#102030"},
+            {"op": "set_all_brightness", "value": 25},
+        )
+        self.assertEqual(code, 0)
+        kb = self.server.devices[0]
+        self.assertEqual(kb["activeMode"], 1)
+        self.assertEqual(kb["modes"][1]["brightness"], 25)
+        self.assertEqual(kb["modes"][1]["colors"], ["#102030"])
+        self.assertEqual(state["devices"][0]["color"], "#102030")
+
+    def test_blackout_does_not_replace_brightness_base(self):
+        state, code = self.once(
+            {"op": "set_color", "device": 0, "color": "#ff0000"},
+            {"op": "set_all_brightness", "value": 50},
+            {"op": "set_color", "device": 0, "color": "#000000", "store": False},
+            {"op": "set_all_brightness", "value": 100},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#ff0000"] * 6)
+        self.assertEqual(state["devices"][0]["color"], "#ff0000")
+
+    def test_set_all_brightness_skips_unlisted_devices(self):
+        state, code = self.once(
+            {"op": "set_color", "device": 0, "color": "#ff0000"},
+            {"op": "set_color", "device": 1, "color": "#00ff00"},
+            {"op": "set_all_brightness", "value": 50, "devices": [0]},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["colors"], ["#800000"] * 6)
+        self.assertEqual(self.server.devices[1]["colors"], ["#00ff00"] * 6)
+
     def test_save_and_profiles(self):
         state, code = self.once({"op": "set_mode", "device": 0, "mode": 1},
                                 {"op": "save", "device": 0},
@@ -334,9 +409,26 @@ class CoalesceTest(unittest.TestCase):
             {"op": "set_color", "device": 0, "color": "#000003"},
             {"op": "set_all", "color": "#000004"},
             {"op": "set_all", "color": "#000005"},
+            {"op": "set_all_brightness", "value": 40},
+            {"op": "set_all_brightness", "value": 80},
         ]
         kept = bridge.coalesce(cmds)
-        self.assertEqual(kept, [cmds[1], cmds[2], cmds[3], cmds[5]])
+        self.assertEqual(kept, [cmds[1], cmds[2], cmds[3], cmds[5], cmds[7]])
+
+
+class ScaleHexTest(unittest.TestCase):
+    def test_half_red(self):
+        self.assertEqual(bridge.scale_hex("#ff0000", 0.5), "#800000")
+
+    def test_zero_is_black(self):
+        self.assertEqual(bridge.scale_hex("#abcdef", 0), "#000000")
+
+    def test_full_is_identity(self):
+        self.assertEqual(bridge.scale_hex("#abcdef", 1), "#abcdef")
+
+    def test_unscale_roundtrip(self):
+        dim = bridge.scale_hex("#ff4020", 0.5)
+        self.assertEqual(bridge.unscale_hex(dim, 0.5), "#ff4020")
 
 
 if __name__ == "__main__":

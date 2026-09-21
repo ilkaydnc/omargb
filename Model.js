@@ -168,6 +168,24 @@ function rangeValue(t, lo, hi) {
   return Math.round(lo + clamp(t, 0, 1) * (hi - lo))
 }
 
+// Software dimming for modes that have no hardware brightness: scale the
+// logical color toward black. 1 is unchanged, 0 is off.
+function scaleHex(hex, t) {
+  var h = hexOf(hex)
+  if (h === "") return ""
+  t = clamp(t, 0, 1)
+  if (t >= 1) return h
+  if (t <= 0) return "#000000"
+  var c = hexToRgb(h)
+  return "#" + hex2(c.r * t) + hex2(c.g * t) + hex2(c.b * t)
+}
+
+function brightnessPercent(value) {
+  var n = Number(value)
+  if (!isFinite(n)) return 100
+  return Math.round(clamp(n, 0, 100))
+}
+
 var PRESETS = [
   { name: "White", hex: "#ffffff" },
   { name: "Red", hex: "#ff0000" },

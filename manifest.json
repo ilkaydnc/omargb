@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.ilkaydnc.omargb",
   "name": "OmaRGB",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "Ilkay Dinc",
   "license": "MIT",
-  "description": "RGB lighting from the Omarchy bar, following your theme. Every device OpenRGB sees, with mode, color, brightness and speed; stealth mode; changes made elsewhere mirrored.",
+  "description": "RGB lighting from the Omarchy bar, following your theme. Every device OpenRGB sees, with mode, color, brightness and speed; a global brightness slider; stealth mode; changes made elsewhere mirrored.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "OmaRGB",
-    "description": "Your RGB hardware on the theme accent, plus per-device mode, color, brightness, speed and power, and a stealth switch. Through OpenRGB.",
+    "description": "Your RGB hardware on the theme accent, plus per-device mode, color, brightness, speed and power, a global brightness slider, and a stealth switch. Through OpenRGB.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",

@@ -116,7 +116,10 @@ widget settings if you manage the server this way.
 | Middle click the dot | Toggle *Follow the theme accent* |
 
 In the panel, the All devices swatches recolor everything at once. The first
-swatch is the theme accent. The switch at the top of the panel is the master
+swatch is the theme accent. Global brightness under those swatches dims every
+listed device together: modes that expose hardware brightness use it, and
+Direct (and other color modes) scale the LED color so raising the slider
+restores what you picked. The switch at the top of the panel is the master
 light switch. Off is stealth mode.
 
 Each device row has a power button and expands into its controls. Mode. Color,
@@ -155,6 +158,7 @@ omarchy-shell omargb applyAccent
 omarchy-shell omargb themeSync true
 omarchy-shell omargb stealth true
 omarchy-shell omargb toggleStealth
+omarchy-shell omargb brightness 50
 omarchy-shell omargb refresh
 ```
 
@@ -199,8 +203,9 @@ Available under Setup → Bar, or inline on the widget's entry in
 
 The entry also carries an internal `off` key with the per-device snapshots
 behind stealth and the power buttons, mode and color for each device you
-switched off. It lives in `shell.json` so a shell restart cannot leave a
-device dark with no record of how to bring it back.
+switched off, plus `globalBrightness` (0–100, default 100) and
+`brightnessColors` for the dimmer. They live in `shell.json` so a shell
+restart cannot leave a device dark with no record of how to bring it back.
 
 ## How it works
 
@@ -222,7 +227,9 @@ in the OpenRGB app reach the bar.
 
 Slider drags stream quiet writes. The service coalesces them to the newest
 color, the bridge applies them without a read-back, and one loud definitive
-write goes out when you release the slider. Without this a drag floods the
+write goes out when you release the slider. Global brightness uses the same
+path: Direct-mode LEDs are scaled from the last full color, and modes with
+their own brightness field get that field. Without this a drag floods the
 shell with device-list updates, and the rebuilt list tears down the very
 slider being dragged. I found that one the hard way.
 

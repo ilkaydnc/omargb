@@ -34,6 +34,11 @@ Commands (stdin), all optionally carrying an "id" echoed in the result:
     {"op":"set_brightness","device":0,"value":50}
     {"op":"set_speed","device":0,"value":50}
     {"op":"set_all","color":"#rrggbb"}
+    {"op":"set_all_brightness","value":50}          # 0..100, every device
+    Optional "colors": {"0":"#rrggbb"} logical colors to dim from.
+    Optional "devices": [0,1] to skip some (stealth).
+    set_color may carry "store":false to paint without replacing the
+    logical color brightness scales from (used to black out a device).
     Any set_* may carry "quiet":true: apply, but skip the read-back and the
     state event. Slider drags stream these and finish with one loud write.
     {"op":"save","device":0}                                 # save active mode to flash
@@ -163,6 +168,31 @@ def parse_hex(value):
 
 def to_hex(r, g, b):
     return "#%02x%02x%02x" % (r, g, b)
+
+
+def scale_hex(hexstr, t):
+    r, g, b = parse_hex(hexstr)
+    t = max(0.0, min(1.0, float(t)))
+    if t >= 1.0:
+        return to_hex(r, g, b)
+    if t <= 0.0:
+        return "#000000"
+    return to_hex(int(round(r * t)), int(round(g * t)), int(round(b * t)))
+
+
+def unscale_hex(hexstr, t):
+    r, g, b = parse_hex(hexstr)
+    t = max(0.0, min(1.0, float(t)))
+    if t <= 0.001:
+        return to_hex(r, g, b)
+    return to_hex(min(255, int(round(r / t))),
+                  min(255, int(round(g / t))),
+                  min(255, int(round(b / t))))
+
+
+def range_value(t, lo, hi):
+    t = max(0.0, min(1.0, float(t)))
+    return int(round(lo + t * (hi - lo)))
 
 
 class Reader:
@@ -423,6 +453,9 @@ class Bridge:
         self.last_write = 0.0
         self.last_poll = 0.0
         self._published = None
+        # 0..1 multiplier applied to every color write. Modes that expose
+        # hardware brightness use that instead of scaling the RGB values.
+        self.brightness = 1.0
 
     # ------------------------------------------------------------ transport
 
@@ -546,8 +579,67 @@ class Bridge:
         payload = struct.pack("<I", self.version) if self.version >= 1 else b""
         data = self.request(index, PKT_REQUEST_CONTROLLER_DATA, payload, expect=PKT_REQUEST_CONTROLLER_DATA)
         dev = parse_controller(data, self.version, index)
+        old = self.devices[index] if 0 <= index < len(self.devices) else None
+        self.restore_bases(dev, old)
         dev.update(summarize_colors(dev))
+        logical = self.logical_summary(dev)
+        if logical.get("color"):
+            dev["color"] = logical["color"]
+            dev["uniform"] = logical["uniform"]
         return dev
+
+    def restore_bases(self, dev, old):
+        """Keep the unscaled colors brightness was last applied from.
+
+        A re-read sees the dimmed hardware values. If they match what we
+        last wrote, the stored bases still hold. Anything else is an
+        external change: unscale it (or take it as-is at full brightness)
+        so the next slider move does not dim twice.
+        """
+        if not old:
+            if self.brightness >= 0.999:
+                dev["_base_colors"] = list(dev.get("_colors") or [])
+            return
+        if old.get("_base_mode_colors"):
+            dev["_base_mode_colors"] = old["_base_mode_colors"]
+        old_bases = old.get("_base_colors")
+        hardware = list(dev.get("_colors") or [])
+        if not old_bases:
+            if self.brightness >= 0.999:
+                dev["_base_colors"] = hardware
+            return
+        if self.brightness >= 0.999:
+            dev["_base_colors"] = hardware or old_bases
+            return
+        expected = [scale_hex(c, self.brightness) for c in old_bases]
+        if expected == hardware:
+            dev["_base_colors"] = old_bases
+        elif hardware and all(c == "#000000" for c in hardware) and any(c != "#000000" for c in old_bases):
+            # Stealth paints black without replacing the logical color.
+            dev["_base_colors"] = old_bases
+        elif hardware:
+            if self.brightness <= 0.001:
+                dev["_base_colors"] = old_bases
+            else:
+                dev["_base_colors"] = [unscale_hex(c, self.brightness) for c in hardware]
+        else:
+            dev["_base_colors"] = old_bases
+
+    def logical_summary(self, dev):
+        modes = dev["modes"]
+        active_mode = dev["activeMode"]
+        active = modes[active_mode] if 0 <= active_mode < len(modes) else None
+        if active and active["colorMode"] == MODE_COLORS_PER_LED:
+            colors = dev.get("_base_colors") or dev.get("_colors") or []
+            if colors:
+                counted = collections.Counter(colors)
+                color, count = counted.most_common(1)[0]
+                return {"color": color, "uniform": count == len(colors)}
+        if active and active["colorMode"] == MODE_COLORS_MODE_SPECIFIC:
+            colors = dev.get("_base_mode_colors") or active.get("colors") or []
+            if colors:
+                return {"color": colors[0], "uniform": len(set(colors)) == 1}
+        return {}
 
     def device_count(self):
         data = self.request(0, PKT_REQUEST_CONTROLLER_COUNT, expect=PKT_REQUEST_CONTROLLER_COUNT)
@@ -648,46 +740,159 @@ class Bridge:
         pkt = PKT_RGBCONTROLLER_SAVEMODE if save else PKT_RGBCONTROLLER_UPDATEMODE
         self.send(dev["index"], pkt, mode_payload(mode["index"], mode, self.version))
 
+    def hardware_color(self, hexstr, mode):
+        """Color to send. Hardware-brightness modes keep the logical RGB."""
+        if mode.get("hasBrightness"):
+            return hexstr
+        return scale_hex(hexstr, self.brightness)
+
+    def with_mode_brightness(self, mode):
+        if not mode.get("hasBrightness"):
+            return mode
+        mode = dict(mode)
+        mode["brightness"] = range_value(
+            self.brightness, mode["brightnessMin"], mode["brightnessMax"])
+        return mode
+
     def apply_mode(self, dev, mode, color=None):
         """Switch `dev` to `mode`, carrying `color` into it when it takes one."""
         mode = dict(mode)
         mode["colors"] = list(mode["colors"])
         if mode["colorMode"] == MODE_COLORS_MODE_SPECIFIC:
             if color is None and not mode["colors"]:
-                color = dev.get("color") or "#ffffff"
+                color = (dev.get("_base_mode_colors") or [None])[0] or dev.get("color") or "#ffffff"
             if color is not None:
                 want = max(mode["colorsMin"], min(max(len(mode["colors"]), 1), mode["colorsMax"] or 1))
-                mode["colors"] = [color] * want
+                dev["_base_mode_colors"] = [color] * want
+                painted = self.hardware_color(color, mode)
+                mode["colors"] = [painted] * want
+        mode = self.with_mode_brightness(mode)
         self.send_mode(dev, mode)
         # Reflect the switch locally: quiet writes never re-read the device,
         # and the next command may depend on the mode this one just set.
         dev["activeMode"] = mode["index"]
         dev["modes"][mode["index"]] = mode
         if mode["colorMode"] == MODE_COLORS_PER_LED and color is not None and dev["ledCount"]:
+            dev["_base_colors"] = [color] * dev["ledCount"]
+            painted = self.hardware_color(color, mode)
             self.send(dev["index"], PKT_RGBCONTROLLER_UPDATELEDS,
-                      leds_payload([color] * dev["ledCount"]))
+                      leds_payload([painted] * dev["ledCount"]))
+            dev["_colors"] = [painted] * dev["ledCount"]
 
-    def set_color(self, dev, color, zone=None):
+    def set_color(self, dev, color, zone=None, store=True):
         mode = self.active_mode(dev)
         if not mode["acceptsColor"]:
             target = self.pick_color_mode(dev)
             self.apply_mode(dev, target, color)
             return
+        painted = color if not store else self.hardware_color(color, mode)
         if mode["colorMode"] == MODE_COLORS_PER_LED:
             if zone is None:
                 if not dev["ledCount"]:
                     raise CommandError("%s has no LEDs" % dev["name"])
+                if store:
+                    dev["_base_colors"] = [color] * dev["ledCount"]
                 self.send(dev["index"], PKT_RGBCONTROLLER_UPDATELEDS,
-                          leds_payload([color] * dev["ledCount"]))
+                          leds_payload([painted] * dev["ledCount"]))
+                dev["_colors"] = [painted] * dev["ledCount"]
             else:
                 zone = int(zone)
                 if not 0 <= zone < len(dev["zones"]):
                     raise CommandError("no zone %d on %s" % (zone, dev["name"]))
                 count = dev["zones"][zone]["ledsCount"]
+                if store:
+                    bases = list(dev.get("_base_colors") or [])
+                    start = sum(z["ledsCount"] for z in dev["zones"][:zone])
+                    while len(bases) < start + count:
+                        bases.append(color)
+                    for i in range(start, start + count):
+                        bases[i] = color
+                    dev["_base_colors"] = bases
                 self.send(dev["index"], PKT_RGBCONTROLLER_UPDATEZONELEDS,
-                          zone_leds_payload(zone, [color] * count))
+                          zone_leds_payload(zone, [painted] * count))
         else:
+            if not store:
+                mode = dict(mode)
+                want = max(len(mode["colors"]), 1)
+                mode["colors"] = [painted] * want
+                self.send_mode(dev, mode)
+                return
             self.apply_mode(dev, mode, color)
+
+    def apply_device_brightness(self, dev):
+        """Re-send this device at the current global brightness."""
+        mode = self.active_mode(dev)
+        if mode.get("hasBrightness"):
+            mode = self.with_mode_brightness(dict(mode))
+            self.send_mode(dev, mode)
+            dev["modes"][mode["index"]] = mode
+            return
+        if not mode["acceptsColor"]:
+            return
+        if mode["colorMode"] == MODE_COLORS_PER_LED:
+            bases = dev.get("_base_colors")
+            if not bases:
+                colors = list(dev.get("_colors") or [])
+                if self.brightness >= 0.999 or self.brightness <= 0.001:
+                    bases = colors
+                else:
+                    bases = [unscale_hex(c, self.brightness) for c in colors]
+                dev["_base_colors"] = bases
+            if not bases:
+                return
+            painted = [scale_hex(c, self.brightness) for c in bases]
+            self.send(dev["index"], PKT_RGBCONTROLLER_UPDATELEDS, leds_payload(painted))
+            dev["_colors"] = painted
+            return
+        if mode["colorMode"] == MODE_COLORS_MODE_SPECIFIC:
+            bases = dev.get("_base_mode_colors")
+            if not bases:
+                colors = list(mode["colors"] or [])
+                if self.brightness >= 0.999 or self.brightness <= 0.001:
+                    bases = colors
+                else:
+                    bases = [unscale_hex(c, self.brightness) for c in colors]
+                dev["_base_mode_colors"] = bases
+            if not bases:
+                return
+            mode = dict(mode)
+            mode["colors"] = [scale_hex(c, self.brightness) for c in bases]
+            self.send_mode(dev, mode)
+            dev["modes"][mode["index"]] = mode
+
+    def set_all_brightness(self, value, colors=None, indices=None):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise CommandError("brightness value required")
+        self.brightness = max(0.0, min(100.0, value)) / 100.0
+        if indices is None:
+            targets = list(self.devices)
+        else:
+            targets = [self.device(i) for i in indices]
+        if isinstance(colors, dict):
+            for dev in targets:
+                raw = colors.get(str(dev["index"]))
+                if not raw:
+                    continue
+                hexstr = to_hex(*parse_hex(raw))
+                if dev["ledCount"]:
+                    dev["_base_colors"] = [hexstr] * dev["ledCount"]
+                try:
+                    mode = self.active_mode(dev)
+                except CommandError:
+                    continue
+                if mode["colorMode"] == MODE_COLORS_MODE_SPECIFIC:
+                    want = max(mode["colorsMin"], min(max(len(mode["colors"]), 1), mode["colorsMax"] or 1))
+                    dev["_base_mode_colors"] = [hexstr] * want
+        errors = []
+        for dev in targets:
+            try:
+                self.apply_device_brightness(dev)
+            except CommandError as e:
+                errors.append(str(e))
+        if errors and len(errors) == len(targets):
+            raise CommandError("; ".join(errors))
 
     def set_mode(self, dev, mode_index, color=None):
         try:
@@ -697,6 +902,8 @@ class Bridge:
         if not 0 <= mode_index < len(dev["modes"]):
             raise CommandError("no mode %d on %s" % (mode_index, dev["name"]))
         self.apply_mode(dev, dev["modes"][mode_index], color)
+        if color is None:
+            self.apply_device_brightness(dev)
 
     def set_mode_field(self, dev, field, value, lo_key, hi_key, flag_key):
         mode = self.active_mode(dev)
@@ -787,6 +994,14 @@ class Bridge:
             if errors and len(errors) == len(self.devices):
                 raise CommandError("; ".join(errors))
             return
+        if op == "set_all_brightness":
+            indices = cmd.get("devices")
+            self.set_all_brightness(cmd.get("value"), colors=cmd.get("colors"), indices=indices)
+            if not quiet:
+                for dev in list(self.devices):
+                    self.refresh_device(dev["index"])
+                self.emit_state()
+            return
         if op == "load_profile":
             self.load_profile(cmd.get("name", ""))
             time.sleep(0.2)
@@ -800,7 +1015,7 @@ class Bridge:
         dev = self.device(cmd.get("device"))
         if op == "set_color":
             color = to_hex(*parse_hex(cmd.get("color")))
-            self.set_color(dev, color, cmd.get("zone"))
+            self.set_color(dev, color, cmd.get("zone"), store=cmd.get("store") is not False)
         elif op == "set_mode":
             color = cmd.get("color")
             self.set_mode(dev, cmd.get("mode"), to_hex(*parse_hex(color)) if color else None)
@@ -887,7 +1102,7 @@ def coalesce(commands):
         op = cmd.get("op")
         if op in ("set_color", "set_brightness", "set_speed"):
             key = (op, cmd.get("device"), cmd.get("zone"))
-        elif op == "set_all":
+        elif op in ("set_all", "set_all_brightness"):
             key = (op,)
         else:
             key = ("__unique__", i)
