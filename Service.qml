@@ -46,6 +46,8 @@ Item {
   readonly property bool themeSync: setting("themeSync", false) === true
   readonly property bool autoStartServer: setting("autoStartServer", true) !== false
   readonly property bool vividAccent: setting("vividAccent", true) !== false
+  readonly property int globalBrightness: Model.brightnessPercent(setting("globalBrightness", 100))
+  readonly property var brightnessColors: setting("brightnessColors", ({})) || ({})
 
   // What actually goes to the hardware when "the accent" is applied.
   readonly property string deviceAccent: vividAccent ? Model.ledAccent(accentHex) : accentHex
@@ -130,7 +132,16 @@ Item {
       serverStarting = false
       lastError = ""
       devices = Array.isArray(msg.devices) ? msg.devices : []
-      if (!wasConnected && themeSync) scheduleThemeApply()
+      if (!wasConnected) {
+        // Re-assert the dimmer before theme paint so a reconnect cannot
+        // snapshot already-scaled hardware as the new full-bright color.
+        if (themeSync) {
+          applyGlobalBrightness(globalBrightness, true, [])
+          scheduleThemeApply()
+        } else {
+          applyGlobalBrightness(globalBrightness, true, null, brightnessColorMap())
+        }
+      }
     } else {
       connected = false
       devices = []
@@ -230,6 +241,38 @@ Item {
     send({ op: "set_all", color: color })
   }
 
+  // indices: device indexes to touch; omit to skip stealth-off devices.
+  // Passing colors pins the logical (full-bright) RGB the dimmer scales from.
+  function applyGlobalBrightness(percent, quiet, indices, colors) {
+    var value = Model.brightnessPercent(percent === undefined || percent === null ? globalBrightness : percent)
+    var payload = { op: "set_all_brightness", value: value, quiet: quiet === true }
+    if (indices === undefined || indices === null) {
+      var off = offRestore
+      var live = []
+      for (var i = 0; i < devices.length; i++) {
+        if (off[devices[i].name] !== undefined) continue
+        live.push(devices[i].index)
+      }
+      indices = live
+    }
+    payload.devices = indices
+    if (colors) payload.colors = colors
+    send(payload)
+  }
+
+  function brightnessColorMap() {
+    var stored = brightnessColors
+    var map = {}
+    for (var i = 0; i < devices.length; i++) {
+      var dev = devices[i]
+      var hex = ""
+      if (stored && stored[String(dev.name)] !== undefined) hex = Model.hexOf(stored[String(dev.name)])
+      if (hex === "") hex = Model.hexOf(dev.color)
+      if (hex !== "") map[String(dev.index)] = hex
+    }
+    return map
+  }
+
   function loadProfile(name) {
     send({ op: "load_profile", name: String(name) })
   }
@@ -256,7 +299,7 @@ Item {
     var snap = { mode: dev.activeMode }
     var color = Model.hexOf(dev.color)
     if (color !== "") snap.color = color
-    if (Model.hasColorMode(dev)) send({ op: "set_color", device: index, color: "#000000" })
+    if (Model.hasColorMode(dev)) send({ op: "set_color", device: index, color: "#000000", store: false })
     else if (Model.offModeIndex(dev) >= 0) setMode(index, Model.offModeIndex(dev))
     return snap
   }

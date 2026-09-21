@@ -30,7 +30,8 @@ Panel {
   // user pick something other than the accent" must use the same value.
   readonly property string deviceAccent: vividAccent ? Model.ledAccent(accentHex) : accentHex
   readonly property bool themeSync: setting("themeSync", false) === true
-  readonly property string summaryColor: service ? service.summaryColor : ""
+  readonly property string reportedColor: service ? service.summaryColor : ""
+  readonly property string summaryColor: reportedColor === "" ? "" : Model.scaleHex(reportedColor, globalBrightness / 100)
   readonly property string actionError: service ? service.actionError : ""
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
@@ -46,6 +47,15 @@ Panel {
   // Model.deviceKey (name, plus the I2C address when there is one), not by
   // index, so a shuffle (replug, rescan) cannot relight the wrong device.
   readonly property var offMap: setting("off", ({})) || ({})
+  readonly property var brightnessColors: setting("brightnessColors", ({})) || ({})
+
+  property int globalBrightness: 100
+  property bool brightnessDragging: false
+
+  function syncBrightnessFromSettings() {
+    if (brightnessDragging) return
+    globalBrightness = Model.brightnessPercent(setting("globalBrightness", 100))
+  }
 
   function deviceIsOff(dev) {
     return Model.offKey(offMap, dev) !== ""
@@ -160,8 +170,8 @@ Panel {
   }
 
   onServiceChanged: pushSettings()
-  onSettingsChanged: pushSettings()
-  Component.onCompleted: pushSettings()
+  onSettingsChanged: { pushSettings(); syncBrightnessFromSettings() }
+  Component.onCompleted: { pushSettings(); syncBrightnessFromSettings() }
 
   // Settings keys earlier versions of this plugin wrote; silently dropped
   // whenever the entry is rewritten so a long-lived shell.json stays clean.
@@ -180,7 +190,28 @@ Panel {
   }
 
   function setThemeSync(on) {
-    persistSettings({ themeSync: on === true })
+    var changes = { themeSync: on === true }
+    if (on === true && deviceAccent !== "") {
+      var next = {}
+      for (var i = 0; i < devices.length; i++) {
+        if (offMap[devices[i].name] !== undefined) continue
+        next[String(devices[i].name)] = deviceAccent
+      }
+      for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
+      changes.brightnessColors = next
+    }
+    persistSettings(changes)
+  }
+
+  onDeviceAccentChanged: {
+    if (!themeSync || deviceAccent === "") return
+    var next = {}
+    for (var i = 0; i < devices.length; i++) {
+      if (offMap[devices[i].name] !== undefined) continue
+      next[String(devices[i].name)] = deviceAccent
+    }
+    for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
+    persistSettings({ brightnessColors: next })
   }
 
   function toggleThemeSync() {
@@ -213,17 +244,36 @@ Panel {
     if (!service) return
     service.setAll(hex)
     var changes = ({})
-    var dirty = false
+    var color = Model.hexOf(hex)
+    var nextColors = {}
+    for (var i = 0; i < devices.length; i++) nextColors[String(devices[i].name)] = color
+    changes.brightnessColors = nextColors
     // "All devices" means all: painting everything relights what was off.
-    if (Object.keys(offMap).length > 0) {
-      changes.off = ({})
-      dirty = true
-    }
-    if (themeSync && Model.hexOf(hex) !== deviceAccent) {
-      changes.themeSync = false
-      dirty = true
-    }
-    if (dirty) persistSettings(changes)
+    if (Object.keys(offMap).length > 0) changes.off = ({})
+    if (themeSync && color !== deviceAccent) changes.themeSync = false
+    persistSettings(changes)
+  }
+
+  function rememberBrightnessColor(name, hex) {
+    var color = Model.hexOf(hex)
+    if (!name || color === "") return
+    var next = {}
+    for (var k in brightnessColors) next[k] = brightnessColors[k]
+    next[String(name)] = color
+    persistSettings({ brightnessColors: next })
+  }
+
+  function previewGlobalBrightness(v) {
+    brightnessDragging = true
+    globalBrightness = Model.brightnessPercent(v)
+    if (service) service.applyGlobalBrightness(globalBrightness, true)
+  }
+
+  function commitGlobalBrightness(v) {
+    globalBrightness = Model.brightnessPercent(v)
+    brightnessDragging = false
+    persistSettings({ globalBrightness: globalBrightness })
+    if (service) service.applyGlobalBrightness(globalBrightness, false, null, service.brightnessColorMap())
   }
 
   function toggleExpanded(index) {
@@ -271,6 +321,7 @@ Panel {
     if (!expandedDev || !service) return
     service.setColor(expandedDev.index, editHex)
     noteManualColor(expandedDev, editHex)
+    rememberBrightnessColor(expandedDev.name, editHex)
   }
 
   function pickDeviceColor(hex) {
@@ -278,6 +329,7 @@ Panel {
     if (expandedDev && service) {
       service.setColor(expandedDev.index, Model.hexOf(hex))
       noteManualColor(expandedDev, hex)
+      rememberBrightnessColor(expandedDev.name, hex)
     }
   }
 
@@ -339,6 +391,7 @@ Panel {
     function themeSync(enabled: string): void { root.setThemeSync(enabled === "true") }
     function stealth(enabled: string): void { root.setStealth(enabled === "true") }
     function toggleStealth(): void { root.toggleStealth() }
+    function brightness(value: string): void { root.commitGlobalBrightness(Number(value)) }
   }
 
   // ---- Bar button: a dot in the lighting color --------------------------
@@ -604,6 +657,18 @@ Panel {
                   fontFamily: root.fontFamily
                 }
               }
+
+              SliderRow {
+                visible: root.devices.length > 0
+                label: "Global brightness"
+                labelWidth: Style.space(132)
+                minimum: 0
+                maximum: 100
+                suffix: "%"
+                value: root.globalBrightness
+                onMoved: function(v) { root.previewGlobalBrightness(v) }
+                onReleased: function(v) { root.commitGlobalBrightness(v) }
+              }
             }
 
             PanelSeparator { foreground: root.fg }
@@ -740,6 +805,7 @@ Panel {
     property real minimum: 0
     property real maximum: 100
     property real step: 1
+    property int labelWidth: Style.space(76)
     signal moved(real value)
     signal released(real value)
 
@@ -750,7 +816,7 @@ Panel {
       id: sliderLabel
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(76)
+      width: sliderRow.labelWidth
       text: sliderRow.label
       color: root.dim
       font.family: root.fontFamily
