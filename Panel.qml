@@ -42,19 +42,27 @@ Panel {
   readonly property var swatches: Model.swatches(deviceAccent)
 
   // Devices switched off from here, with what to restore when they come back:
-  // { "<device name>": { "mode": <index>, "color": "#rrggbb" } }. Keyed by
-  // name so an index shuffle (replug, rescan) cannot relight the wrong device.
+  // { "<device key>": { "mode": <index>, "color": "#rrggbb" } }. Keyed by
+  // location, not index, so a shuffle (replug, rescan) cannot relight the
+  // wrong device.
   readonly property var offMap: setting("off", ({})) || ({})
 
-  function deviceIsOff(name) {
-    return offMap[String(name)] !== undefined
+  // Two devices of the same model report the same name.
+  function deviceKey(dev) {
+    if (!dev) return ""
+    var loc = String(dev.location || "")
+    return loc !== "" ? loc : String(dev.name || "")
+  }
+
+  function deviceIsOff(dev) {
+    return offMap[deviceKey(dev)] !== undefined
   }
 
   // Stealth is not separate state: it is simply "every device is off", so a
   // device switched back on by hand unsets it on its own.
   readonly property bool stealth: {
     if (devices.length === 0) return false
-    for (var i = 0; i < devices.length; i++) if (!deviceIsOff(devices[i].name)) return false
+    for (var i = 0; i < devices.length; i++) if (!deviceIsOff(devices[i])) return false
     return true
   }
 
@@ -63,12 +71,13 @@ Panel {
     if (!dev || !service) return
     var next = {}
     for (var k in offMap) next[k] = offMap[k]
-    if (next[dev.name] !== undefined) {
-      var snap = next[dev.name]
-      delete next[dev.name]
+    var key = deviceKey(dev)
+    if (next[key] !== undefined) {
+      var snap = next[key]
+      delete next[key]
       service.restoreDevice(dev.index, snap)
     } else {
-      next[dev.name] = service.blackout(dev.index)
+      next[key] = service.blackout(dev.index)
     }
     persistSettings({ off: next })
   }
@@ -79,11 +88,12 @@ Panel {
     for (var k in offMap) next[k] = offMap[k]
     for (var i = 0; i < devices.length; i++) {
       var dev = devices[i]
-      if (on && next[dev.name] === undefined) {
-        next[dev.name] = service.blackout(dev.index)
-      } else if (!on && next[dev.name] !== undefined) {
-        service.restoreDevice(dev.index, next[dev.name])
-        delete next[dev.name]
+      var key = deviceKey(dev)
+      if (on && next[key] === undefined) {
+        next[key] = service.blackout(dev.index)
+      } else if (!on && next[key] !== undefined) {
+        service.restoreDevice(dev.index, next[key])
+        delete next[key]
       }
     }
     persistSettings({ off: next })
@@ -98,9 +108,9 @@ Panel {
   function noteManualColor(dev, hex) {
     var changes = ({})
     var dirty = false
-    if (dev && offMap[String(dev.name)] !== undefined) {
+    if (dev && offMap[deviceKey(dev)] !== undefined) {
       var next = {}
-      for (var k in offMap) if (k !== String(dev.name)) next[k] = offMap[k]
+      for (var k in offMap) if (k !== deviceKey(dev)) next[k] = offMap[k]
       changes.off = next
       dirty = true
     }
@@ -228,9 +238,9 @@ Panel {
     service.setMode(dev.index, modeIndex)
     var changes = ({})
     var dirty = false
-    if (offMap[String(dev.name)] !== undefined) {
+    if (offMap[deviceKey(dev)] !== undefined) {
       var next = {}
-      for (var k in offMap) if (k !== String(dev.name)) next[k] = offMap[k]
+      for (var k in offMap) if (k !== deviceKey(dev)) next[k] = offMap[k]
       changes.off = next
       dirty = true
     }
@@ -794,7 +804,7 @@ Panel {
     // binding feeding it. Push the server's mode in by hand instead, so a
     // mode changed elsewhere shows up here rather than the last pick.
     onActiveModeValueChanged: modeDropdown.value = activeModeValue
-    readonly property bool off: root.deviceIsOff(dev ? dev.name : "")
+    readonly property bool off: root.deviceIsOff(dev)
     readonly property string colorHex: {
       if (off) return ""
       if (expanded && mode && mode.acceptsColor) return root.editHex
