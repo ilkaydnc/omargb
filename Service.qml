@@ -134,11 +134,14 @@ Item {
       devices = Array.isArray(msg.devices) ? msg.devices : []
       if (!wasConnected) {
         // Re-assert the dimmer before theme paint so a reconnect cannot
-        // snapshot already-scaled hardware as the new full-bright color.
+        // snapshot already-scaled hardware as the new full-bright color. At
+        // 100% there is nothing to re-assert, and writing anyway would reset
+        // every device's own brightness.
+        var dimmed = globalBrightness < 100
         if (themeSync) {
-          applyGlobalBrightness(globalBrightness, true, [])
+          if (dimmed) applyGlobalBrightness(globalBrightness, true, [])
           scheduleThemeApply()
-        } else {
+        } else if (dimmed) {
           applyGlobalBrightness(globalBrightness, true, null, brightnessColorMap())
         }
       }
@@ -250,7 +253,7 @@ Item {
       var off = offRestore
       var live = []
       for (var i = 0; i < devices.length; i++) {
-        if (off[devices[i].name] !== undefined) continue
+        if (Model.offKey(off, devices[i]) !== "") continue
         live.push(devices[i].index)
       }
       indices = live
@@ -261,16 +264,7 @@ Item {
   }
 
   function brightnessColorMap() {
-    var stored = brightnessColors
-    var map = {}
-    for (var i = 0; i < devices.length; i++) {
-      var dev = devices[i]
-      var hex = ""
-      if (stored && stored[String(dev.name)] !== undefined) hex = Model.hexOf(stored[String(dev.name)])
-      if (hex === "") hex = Model.hexOf(dev.color)
-      if (hex !== "") map[String(dev.index)] = hex
-    }
-    return map
+    return Model.brightnessColorMap(devices, brightnessColors)
   }
 
   function loadProfile(name) {

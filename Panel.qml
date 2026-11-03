@@ -194,8 +194,8 @@ Panel {
     if (on === true && deviceAccent !== "") {
       var next = {}
       for (var i = 0; i < devices.length; i++) {
-        if (offMap[devices[i].name] !== undefined) continue
-        next[String(devices[i].name)] = deviceAccent
+        if (deviceIsOff(devices[i])) continue
+        next[Model.deviceKey(devices[i])] = deviceAccent
       }
       for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
       changes.brightnessColors = next
@@ -207,8 +207,8 @@ Panel {
     if (!themeSync || deviceAccent === "") return
     var next = {}
     for (var i = 0; i < devices.length; i++) {
-      if (offMap[devices[i].name] !== undefined) continue
-      next[String(devices[i].name)] = deviceAccent
+      if (deviceIsOff(devices[i])) continue
+      next[Model.deviceKey(devices[i])] = deviceAccent
     }
     for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
     persistSettings({ brightnessColors: next })
@@ -246,7 +246,7 @@ Panel {
     var changes = ({})
     var color = Model.hexOf(hex)
     var nextColors = {}
-    for (var i = 0; i < devices.length; i++) nextColors[String(devices[i].name)] = color
+    for (var i = 0; i < devices.length; i++) nextColors[Model.deviceKey(devices[i])] = color
     changes.brightnessColors = nextColors
     // "All devices" means all: painting everything relights what was off.
     if (Object.keys(offMap).length > 0) changes.off = ({})
@@ -254,12 +254,13 @@ Panel {
     persistSettings(changes)
   }
 
-  function rememberBrightnessColor(name, hex) {
+  function rememberBrightnessColor(dev, hex) {
     var color = Model.hexOf(hex)
-    if (!name || color === "") return
+    var key = Model.deviceKey(dev)
+    if (key === "" || color === "") return
     var next = {}
     for (var k in brightnessColors) next[k] = brightnessColors[k]
-    next[String(name)] = color
+    next[key] = color
     persistSettings({ brightnessColors: next })
   }
 
@@ -321,7 +322,7 @@ Panel {
     if (!expandedDev || !service) return
     service.setColor(expandedDev.index, editHex)
     noteManualColor(expandedDev, editHex)
-    rememberBrightnessColor(expandedDev.name, editHex)
+    rememberBrightnessColor(expandedDev, editHex)
   }
 
   function pickDeviceColor(hex) {
@@ -329,7 +330,7 @@ Panel {
     if (expandedDev && service) {
       service.setColor(expandedDev.index, Model.hexOf(hex))
       noteManualColor(expandedDev, hex)
-      rememberBrightnessColor(expandedDev.name, hex)
+      rememberBrightnessColor(expandedDev, hex)
     }
   }
 

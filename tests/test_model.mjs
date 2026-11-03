@@ -42,3 +42,19 @@ test("offKey still finds an entry saved under the bare name", () => {
   assert.equal(offKey({}, stick("0x71")), "")
   assert.equal(offKey(null, stick("0x71")), "")
 })
+
+test("brightnessColorMap never flattens a multi-color device", () => {
+  const { brightnessColorMap } = context
+  const devices = [
+    { index: 0, name: "Keyboard", location: "HID: /dev/hidraw3", color: "#ff0000", uniform: true },
+    { index: 1, name: "Strip", location: "", color: "#ff0000", uniform: false },
+    { index: 2, ...stick("0x71"), color: "#00ff00", uniform: true },
+    { index: 3, ...stick("0x73"), color: "#00ff00", uniform: true },
+  ]
+  const map = brightnessColorMap(devices, { "ENE DRAM@0x73": "#0000ff", Strip: "#abcdef" })
+  assert.equal(map["0"], "#ff0000")
+  assert.equal(map["1"], "#abcdef")
+  assert.equal(map["2"], "#00ff00")
+  assert.equal(map["3"], "#0000ff")
+  assert.equal(brightnessColorMap(devices, {})["1"], undefined)
+})
