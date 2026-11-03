@@ -766,7 +766,9 @@ class Bridge:
                 dev["_base_mode_colors"] = [color] * want
                 painted = self.hardware_color(color, mode)
                 mode["colors"] = [painted] * want
-        mode = self.with_mode_brightness(mode)
+        # At full there is nothing to dim: leave the device's own brightness.
+        if self.brightness < 0.999:
+            mode = self.with_mode_brightness(mode)
         self.send_mode(dev, mode)
         # Reflect the switch locally: quiet writes never re-read the device,
         # and the next command may depend on the mode this one just set.
@@ -902,7 +904,7 @@ class Bridge:
         if not 0 <= mode_index < len(dev["modes"]):
             raise CommandError("no mode %d on %s" % (mode_index, dev["name"]))
         self.apply_mode(dev, dev["modes"][mode_index], color)
-        if color is None:
+        if color is None and self.brightness < 0.999:
             self.apply_device_brightness(dev)
 
     def set_mode_field(self, dev, field, value, lo_key, hi_key, flag_key):

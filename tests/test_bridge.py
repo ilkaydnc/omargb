@@ -187,6 +187,29 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(self.server.devices[0]["colors"], ["#800000"] * 6)
         self.assertEqual(self.server.devices[1]["colors"], ["#00ff00"] * 6)
 
+    def test_color_at_full_brightness_keeps_device_brightness(self):
+        self.server.devices[0]["activeMode"] = 1
+        state, code = self.once({"op": "set_color", "device": 0, "color": "#ff8800"})
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[0]["modes"][1]["brightness"], 80)
+        state, code = self.once({"op": "set_mode", "device": 0, "mode": 1})
+        self.assertEqual(self.server.devices[0]["modes"][1]["brightness"], 80)
+
+    def test_set_all_brightness_without_colors_keeps_per_led_colors(self):
+        state, code = self.once({"op": "set_all_brightness", "value": 50, "devices": [1]})
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[1]["colors"],
+                         ["#800000", "#800000", "#008000", "#008000", "#000080", "#000080"])
+
+    def test_set_all_brightness_without_colors_restores_per_led_colors(self):
+        state, code = self.once(
+            {"op": "set_all_brightness", "value": 50, "devices": [1]},
+            {"op": "set_all_brightness", "value": 100, "devices": [1]},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.devices[1]["colors"],
+                         ["#ff0000", "#ff0000", "#00ff00", "#00ff00", "#0000ff", "#0000ff"])
+
     def test_save_and_profiles(self):
         state, code = self.once({"op": "set_mode", "device": 0, "mode": 1},
                                 {"op": "save", "device": 0},

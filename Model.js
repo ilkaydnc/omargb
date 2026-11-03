@@ -186,6 +186,23 @@ function brightnessPercent(value) {
   return Math.round(clamp(n, 0, 100))
 }
 
+// { "<device index>": "#rrggbb" }: the full-bright color the dimmer scales
+// each device from. A color picked here (stored, keyed by deviceKey) wins.
+// Otherwise a single-color device sends its own color, and a multi-color one
+// sends nothing so the bridge keeps its per-LED colors instead of flattening
+// them to the most common one.
+function brightnessColorMap(devices, stored) {
+  var map = ({})
+  for (var i = 0; i < (devices || []).length; i++) {
+    var dev = devices[i]
+    var key = deviceKey(dev)
+    var hex = stored && stored[key] !== undefined ? hexOf(stored[key]) : ""
+    if (hex === "" && dev.uniform !== false) hex = hexOf(dev.color)
+    if (hex !== "") map[String(dev.index)] = hex
+  }
+  return map
+}
+
 var PRESETS = [
   { name: "White", hex: "#ffffff" },
   { name: "Red", hex: "#ff0000" },
