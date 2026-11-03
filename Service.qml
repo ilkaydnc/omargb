@@ -51,7 +51,7 @@ Item {
   readonly property string deviceAccent: vividAccent ? Model.ledAccent(accentHex) : accentHex
 
   // Devices switched off from the panel, with what to put back when they come
-  // on again: { "<device name>": { "mode": <index>, "color": "#rrggbb" } }.
+  // on again: { "<Model.deviceKey>": { "mode": <index>, "color": "#rrggbb" } }.
   // The panel owns writing this (it persists settings); the service reads it
   // so theme sync leaves dark devices dark.
   readonly property var offRestore: setting("off", ({})) || ({})
@@ -283,7 +283,7 @@ Item {
     if (!themeSync || !connected || deviceAccent === "") return
     var off = offRestore
     for (var i = 0; i < devices.length; i++) {
-      if (off[devices[i].name] !== undefined) continue
+      if (Model.offKey(off, devices[i]) !== "") continue
       send({ op: "set_color", device: devices[i].index, color: deviceAccent, quiet: true })
     }
     // One loud read-back for the batch, so the panel and the bar dot settle.

@@ -217,6 +217,27 @@ function activeMode(dev) {
   return dev.modes[i]
 }
 
+// Identity that survives a reboot. Two sticks of the same model share a name,
+// so an I2C address is kept. A USB path is not, because hidraw nodes move.
+function deviceKey(dev) {
+  if (!dev) return ""
+  var name = String(dev.name || "")
+  var match = /address\s+(0x[0-9a-fA-F]+)/.exec(String(dev.location || ""))
+  return match ? name + "@" + match[1].toLowerCase() : name
+}
+
+// The off-map key holding this device's entry: its own key, or its bare name
+// for an entry written before keys carried the I2C address. "" when off has
+// nothing for it.
+function offKey(map, dev) {
+  if (!map || !dev) return ""
+  var key = deviceKey(dev)
+  if (key !== "" && map[key] !== undefined) return key
+  var name = String(dev.name || "")
+  if (name !== "" && map[name] !== undefined) return name
+  return ""
+}
+
 function modeOptions(dev) {
   var out = []
   if (!dev || !dev.modes) return out

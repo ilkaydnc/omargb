@@ -43,19 +43,20 @@ Panel {
 
   // Devices switched off from here, with what to restore when they come back:
   // { "<device key>": { "mode": <index>, "color": "#rrggbb" } }. Keyed by
-  // location, not index, so a shuffle (replug, rescan) cannot relight the
-  // wrong device.
+  // Model.deviceKey (name, plus the I2C address when there is one), not by
+  // index, so a shuffle (replug, rescan) cannot relight the wrong device.
   readonly property var offMap: setting("off", ({})) || ({})
 
-  // Two devices of the same model report the same name.
-  function deviceKey(dev) {
-    if (!dev) return ""
-    var loc = String(dev.location || "")
-    return loc !== "" ? loc : String(dev.name || "")
+  function deviceIsOff(dev) {
+    return Model.offKey(offMap, dev) !== ""
   }
 
-  function deviceIsOff(dev) {
-    return offMap[deviceKey(dev)] !== undefined
+  // offMap without this device's entry.
+  function offMapWithout(dev) {
+    var drop = Model.offKey(offMap, dev)
+    var next = {}
+    for (var k in offMap) if (k !== drop) next[k] = offMap[k]
+    return next
   }
 
   // Stealth is not separate state: it is simply "every device is off", so a
@@ -71,13 +72,13 @@ Panel {
     if (!dev || !service) return
     var next = {}
     for (var k in offMap) next[k] = offMap[k]
-    var key = deviceKey(dev)
-    if (next[key] !== undefined) {
+    var key = Model.offKey(next, dev)
+    if (key !== "") {
       var snap = next[key]
       delete next[key]
       service.restoreDevice(dev.index, snap)
     } else {
-      next[key] = service.blackout(dev.index)
+      next[Model.deviceKey(dev)] = service.blackout(dev.index)
     }
     persistSettings({ off: next })
   }
@@ -88,10 +89,10 @@ Panel {
     for (var k in offMap) next[k] = offMap[k]
     for (var i = 0; i < devices.length; i++) {
       var dev = devices[i]
-      var key = deviceKey(dev)
-      if (on && next[key] === undefined) {
-        next[key] = service.blackout(dev.index)
-      } else if (!on && next[key] !== undefined) {
+      var key = Model.offKey(next, dev)
+      if (on && key === "") {
+        next[Model.deviceKey(dev)] = service.blackout(dev.index)
+      } else if (!on && key !== "") {
         service.restoreDevice(dev.index, next[key])
         delete next[key]
       }
@@ -108,10 +109,8 @@ Panel {
   function noteManualColor(dev, hex) {
     var changes = ({})
     var dirty = false
-    if (dev && offMap[deviceKey(dev)] !== undefined) {
-      var next = {}
-      for (var k in offMap) if (k !== deviceKey(dev)) next[k] = offMap[k]
-      changes.off = next
+    if (dev && deviceIsOff(dev)) {
+      changes.off = offMapWithout(dev)
       dirty = true
     }
     if (themeSync && Model.hexOf(hex) !== deviceAccent) {
@@ -238,10 +237,8 @@ Panel {
     service.setMode(dev.index, modeIndex)
     var changes = ({})
     var dirty = false
-    if (offMap[deviceKey(dev)] !== undefined) {
-      var next = {}
-      for (var k in offMap) if (k !== deviceKey(dev)) next[k] = offMap[k]
-      changes.off = next
+    if (deviceIsOff(dev)) {
+      changes.off = offMapWithout(dev)
       dirty = true
     }
     // Choosing a hardware effect hands the color to the controller; the theme
