@@ -58,6 +58,22 @@ Item {
   // so theme sync leaves dark devices dark.
   readonly property var offRestore: setting("off", ({})) || ({})
 
+  // Mode, color, brightness and speed last chosen for each device. Direct and
+  // most other modes cannot be saved onto the hardware, so this is what comes
+  // back when OpenRGB starts with its own defaults. The panel writes it.
+  readonly property var litRestore: setting("lit", ({})) || ({})
+
+  // OpenRGB accepts SDK clients while device detection is still running, and
+  // a controller often resets to its default a moment after it first appears.
+  // Restore waits until the device list stops changing, then keeps writing
+  // until a read-back matches or the deadline passes.
+  property bool restoreSettled: false
+  property bool restoreHold: false
+  property bool restoreInFlight: false
+  property bool restoreDimmed: false
+  property double restoreDeadlineMs: 0
+  property string deviceSignature: ""
+
   readonly property string bridgePath: Qt.resolvedUrl("bridge/openrgb_bridge.py").toString().replace(/^file:\/\//, "")
 
   // Once per shell session: spawning openrgb on every failed connect would
@@ -110,6 +126,7 @@ Item {
       profiles = Array.isArray(msg.profiles) ? msg.profiles : []
       break
     case "result":
+      restoreInFlight = false
       if (msg.ok === false) {
         actionError = String(msg.error || "OpenRGB rejected the command")
         actionErrorTimer.restart()
@@ -131,27 +148,59 @@ Item {
       consecutiveFailures = 0
       serverStarting = false
       lastError = ""
+      restoreInFlight = false
       devices = Array.isArray(msg.devices) ? msg.devices : []
-      if (!wasConnected) {
-        // Re-assert the dimmer before theme paint so a reconnect cannot
-        // snapshot already-scaled hardware as the new full-bright color. At
-        // 100% there is nothing to re-assert, and writing anyway would reset
-        // every device's own brightness.
-        var dimmed = globalBrightness < 100
-        if (themeSync) {
-          if (dimmed) applyGlobalBrightness(globalBrightness, true, [])
+      var signature = deviceSignatureOf(devices)
+      if (themeSync) {
+        // The accent is painted by scheduleThemeApply. Remembering `lit` is
+        // the panel's job; applying it here would fight the theme.
+        deviceSignature = signature
+        restoreHold = false
+        restoreSettled = true
+        restoreTimer.stop()
+        if (!wasConnected) {
+          // Re-assert the dimmer before theme paint so a reconnect cannot
+          // snapshot already-scaled hardware as the new full-bright color.
+          // At 100% there is nothing to re-assert.
+          if (globalBrightness < 100) applyGlobalBrightness(globalBrightness, true, [])
           scheduleThemeApply()
-        } else if (dimmed) {
-          applyGlobalBrightness(globalBrightness, true, null, brightnessColorMap())
         }
+      } else if (!wasConnected || signature !== deviceSignature) {
+        armRestore()
       }
     } else {
       connected = false
+      restoreInFlight = false
+      restoreSettled = false
+      restoreHold = false
+      restoreDimmed = false
+      restoreTimer.stop()
+      deviceSignature = ""
       devices = []
       lastError = String(msg.error || "")
       consecutiveFailures += 1
       maybeAutoStart()
     }
+  }
+
+  function deviceSignatureOf(devs) {
+    var parts = []
+    for (var i = 0; i < devs.length; i++)
+      parts.push(Model.deviceKey(devs[i]) + "#" + devs[i].index)
+    return parts.join("|")
+  }
+
+  // Push the deadline out and stay quiet until the list has held still.
+  // Detection adds devices for several seconds after the server starts
+  // answering; writing into that window is what gets wiped.
+  function armRestore() {
+    deviceSignature = deviceSignatureOf(devices)
+    restoreHold = true
+    restoreSettled = false
+    restoreInFlight = false
+    restoreDimmed = false
+    restoreDeadlineMs = Date.now() + 20000
+    restoreTimer.restart()
   }
 
   // ---- Server lifecycle
@@ -333,10 +382,131 @@ Item {
   }
 
   onDeviceAccentChanged: scheduleThemeApply()
-  onThemeSyncChanged: if (themeSync) scheduleThemeApply()
+  // Turning theme sync off must not replay `lit`. The panel has just written
+  // the accent into it; a boot-style restore here would paint the colors from
+  // before sync, which is the bug the switch is not allowed to have.
+  onThemeSyncChanged: {
+    if (!themeSync) return
+    scheduleThemeApply()
+    restoreHold = false
+    restoreSettled = true
+    restoreTimer.stop()
+  }
+  onSettingsChanged: if (!themeSync && !restoreHold) applyRemembered()
+
+  // Put the stored mode and color back. A device counts as done only when a
+  // later read-back matches, so a controller that resets after the first
+  // write gets another try. Devices the panel switched off are left alone.
+  // Matching early does not end the window: a reset can still land inside it.
+  function applyRemembered() {
+    if (!connected || restoreHold) return
+    if (themeSync) {
+      restoreSettled = true
+      restoreTimer.stop()
+      return
+    }
+    if (restoreInFlight) {
+      if (Date.now() < restoreDeadlineMs + 5000) return
+      restoreInFlight = false
+    }
+    // The bridge starts at full brightness. Set the dimmer from the remembered
+    // colors before the per-device writes, so those writes are scaled and the
+    // dimmer does not first flash the unrelated brightnessColors map.
+    if (!restoreDimmed && globalBrightness < 100) {
+      restoreDimmed = true
+      applyGlobalBrightness(globalBrightness, true, null, rememberedColorMap())
+    }
+    var lit = Model.plain(litRestore)
+    var off = Model.plain(offRestore)
+    var expired = restoreDeadlineMs > 0 && Date.now() >= restoreDeadlineMs
+    var missed = []
+    var sent = false
+    for (var i = 0; i < devices.length; i++) {
+      var dev = devices[i]
+      var key = Model.deviceKey(dev)
+      if (key === "") continue
+      if (Model.offKey(off, dev) !== "") continue
+      var snap = Model.lookupSnap(lit, dev)
+      if (!snap) continue
+      if (Model.snapMatches(dev, snap)) continue
+      if (expired) {
+        missed.push(String(dev.name || key))
+        continue
+      }
+      if (applyLitSnap(dev, snap)) sent = true
+    }
+    if (sent) restoreInFlight = true
+    if (expired) {
+      if (missed.length) console.warn("openrgb: did not restore " + missed.join(", "))
+      restoreSettled = true
+      restoreTimer.stop()
+    }
+  }
+
+  // Logical colors for the dimmer. Per-device brightness is omitted while the
+  // slider is below 100%, because the slider owns that field.
+  function rememberedColorMap() {
+    var map = ({})
+    var lit = Model.plain(litRestore)
+    var off = Model.plain(offRestore)
+    for (var i = 0; i < devices.length; i++) {
+      var dev = devices[i]
+      if (Model.offKey(off, dev) !== "") continue
+      var snap = Model.lookupSnap(lit, dev)
+      var hex = snap ? Model.hexOf(snap.color) : ""
+      if (hex !== "") map[String(dev.index)] = hex
+    }
+    return map
+  }
+
+  function applyLitSnap(dev, snap) {
+    var sent = false
+    var modeName = snap.mode ? String(snap.mode) : ""
+    var color = Model.hexOf(snap.color)
+    var mode = Model.modeByName(dev, modeName)
+    var current = Model.activeMode(dev)
+    var modeOk = modeName === "" || (current && current.name === modeName)
+    var colorOk = color === "" || Model.hexOf(dev.color) === color
+    if (!modeOk || !colorOk) {
+      if (mode) {
+        if (color !== "" && mode.acceptsColor)
+          send({ op: "set_mode", device: dev.index, mode: mode.index, color: color })
+        else
+          send({ op: "set_mode", device: dev.index, mode: mode.index })
+        sent = true
+      } else if (color !== "") {
+        send({ op: "set_color", device: dev.index, color: color })
+        sent = true
+      }
+    }
+    var target = mode || current
+    if (globalBrightness >= 100 && target && target.hasBrightness && typeof snap.brightness === "number"
+        && Number(target.brightness) !== Number(snap.brightness)) {
+      send({ op: "set_brightness", device: dev.index, value: snap.brightness })
+      sent = true
+    }
+    if (target && target.hasSpeed && typeof snap.speed === "number"
+        && Number(target.speed) !== Number(snap.speed)) {
+      send({ op: "set_speed", device: dev.index, value: snap.speed })
+      sent = true
+    }
+    return sent
+  }
 
   onConfiguredHostChanged: send({ op: "connect", host: configuredHost, port: configuredPort })
   onConfiguredPortChanged: send({ op: "connect", host: configuredHost, port: configuredPort })
+
+  Timer {
+    // Fires once the device list has been quiet, then again until the
+    // deadline. restart() from armRestore() is what waits out detection.
+    id: restoreTimer
+    interval: 2000
+    repeat: true
+    onTriggered: {
+      root.restoreHold = false
+      root.applyRemembered()
+    }
+  }
 
   Timer {
     // A theme switch moves several colors in quick succession; one write
@@ -394,6 +564,12 @@ Item {
     onExited: function(exitCode, exitStatus) {
       root.bridgeReady = false
       root.connected = false
+      root.restoreInFlight = false
+      root.restoreSettled = false
+      root.restoreHold = false
+      root.restoreDimmed = false
+      root.deviceSignature = ""
+      restoreTimer.stop()
       root.devices = []
       if (root.lastError === "") root.lastError = "the OpenRGB bridge exited (" + exitCode + ")"
       root.restartDelayMs = Math.min(30000, root.restartDelayMs * 2)

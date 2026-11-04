@@ -114,20 +114,96 @@ Panel {
     setStealth(!stealth)
   }
 
-  // A hand-picked color is the user taking control: theme sync stops fighting
-  // it, and a device that was off is on again in the book-keeping.
-  function noteManualColor(dev, hex) {
+  // Brightness colors for "these devices follow the accent", with one device
+  // allowed to keep a color of its own. Devices that are off stay as they were.
+  function accentBrightnessColors(overrideDev, overrideHex) {
+    var next = {}
+    var overrideKey = overrideDev ? Model.deviceKey(overrideDev) : ""
+    var picked = Model.hexOf(overrideHex)
+    for (var i = 0; i < devices.length; i++) {
+      var dev = devices[i]
+      var key = Model.deviceKey(dev)
+      if (key === "") continue
+      if (deviceIsOff(dev) && key !== overrideKey) continue
+      if (key === overrideKey && picked !== "") next[key] = picked
+      else if (deviceAccent !== "") next[key] = deviceAccent
+    }
+    for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
+    return next
+  }
+
+  // Refuse a `lit` write that lost keys. A half-read map would replace every
+  // other device's color with nothing.
+  function persistLit(changes, lit) {
+    var raw = setting("lit", ({})) || ({})
+    if (Model.objectKeys(lit).length < Model.objectKeys(raw).length) {
+      console.warn("openrgb: refused to store lighting; the saved map could not be read back")
+      if (changes && Model.objectKeys(changes).length) persistSettings(changes)
+      return
+    }
+    changes = changes || ({})
+    changes.lit = lit
+    persistSettings(changes)
+  }
+
+  // One device's entry. The global dimmer owns per-mode brightness below 100%,
+  // so a dimmed read-back is not stored as the user's brightness.
+  function persistDeviceLit(dev, overrides, changes) {
+    var raw = setting("lit", ({})) || ({})
+    var lit = Model.plain(raw)
+    if (Model.objectKeys(lit).length < Model.objectKeys(raw).length) {
+      console.warn("openrgb: refused to store lighting; the saved map could not be read back")
+      if (changes && Model.objectKeys(changes).length) persistSettings(changes)
+      return
+    }
+    var key = Model.deviceKey(dev)
+    if (!dev || key === "") {
+      if (changes && Model.objectKeys(changes).length) persistSettings(changes)
+      return
+    }
+    overrides = overrides || ({})
+    if (globalBrightness < 100) overrides.brightness = false
+    lit[key] = Model.lightingSnapshot(dev, overrides)
+    changes = changes || ({})
+    changes.lit = lit
+    persistSettings(changes)
+  }
+
+  function accentLit(off, overrideFor) {
+    return Model.litKeepingAccent(setting("lit"), devices, deviceAccent, off, overrideFor, globalBrightness < 100)
+  }
+
+  // A hand-picked color takes that device out of theme sync. Every other
+  // device that was following the accent stays on it, in the hardware and in
+  // `lit`, so the next start does not put them back to their pre-sync colors.
+  function commitDeviceColor(dev, hex) {
+    var color = Model.hexOf(hex)
+    if (!dev || !service || color === "") return
+    service.setColor(dev.index, color)
     var changes = ({})
-    var dirty = false
-    if (dev && deviceIsOff(dev)) {
-      changes.off = offMapWithout(dev)
-      dirty = true
-    }
-    if (themeSync && Model.hexOf(hex) !== deviceAccent) {
+    if (deviceIsOff(dev)) changes.off = offMapWithout(dev)
+    var leaving = themeSync && color !== deviceAccent
+    if (leaving) {
       changes.themeSync = false
-      dirty = true
+      changes.brightnessColors = accentBrightnessColors(dev, color)
+      var edited = Model.deviceKey(dev)
+      persistLit(changes, accentLit(changes.off || offMap, function(d) {
+        return Model.deviceKey(d) === edited ? ({ color: color }) : null
+      }))
+      return
     }
-    if (dirty) persistSettings(changes)
+    var nextColors = {}
+    for (var k in brightnessColors) nextColors[k] = brightnessColors[k]
+    var key = Model.deviceKey(dev)
+    if (key !== "") nextColors[key] = color
+    changes.brightnessColors = nextColors
+    if (themeSync) {
+      persistLit(changes, accentLit(changes.off || offMap, function(d) {
+        return Model.deviceKey(d) === key ? ({ color: color }) : null
+      }))
+      return
+    }
+    persistDeviceLit(dev, ({ color: color }), changes)
   }
 
   // ---- Cursor state. One highlight on screen at a time, shared by the mouse
@@ -169,9 +245,68 @@ Panel {
     if (service && "settings" in service) service.settings = root.settings
   }
 
+  // False until the bar has injected this widget's shell.json entry. Seeding
+  // earlier would write a lighting map over an empty settings object and
+  // drop themeSync and the off list.
+  property bool settingsReady: false
+
   onServiceChanged: pushSettings()
-  onSettingsChanged: { pushSettings(); syncBrightnessFromSettings() }
+  onSettingsChanged: {
+    settingsReady = true
+    pushSettings()
+    syncBrightnessFromSettings()
+    seedMissingLit()
+  }
   Component.onCompleted: { pushSettings(); syncBrightnessFromSettings() }
+
+  Connections {
+    target: root.service
+    ignoreUnknownSignals: true
+    function onRestoreSettledChanged() {
+      if (root.service && root.service.restoreSettled) root.seedMissingLit()
+    }
+  }
+
+  // Fill in devices that have no stored lighting yet, without touching the
+  // ones already remembered. Runs only after restore has finished, and never
+  // while theme sync is on: that path records the accent itself, and seeding
+  // here would store a boot default over it.
+  function seedMissingLit() {
+    if (!settingsReady || themeSync) return
+    if (!service || service.restoreSettled !== true) return
+    if (!devices || devices.length === 0) return
+    if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return
+    if (root.settings.themeSync === undefined && root.settings.off === undefined && root.settings.lit === undefined) return
+    var raw = setting("lit", ({})) || ({})
+    var lit = Model.plain(raw)
+    if (Model.objectKeys(lit).length < Model.objectKeys(raw).length) return
+    var offPlain = Model.plain(offMap)
+    var changed = false
+    for (var i = 0; i < devices.length; i++) {
+      var dev = devices[i]
+      var key = Model.deviceKey(dev)
+      if (!dev || key === "") continue
+      if (lit[key]) continue
+      var snap = Model.lookupSnap(lit, dev)
+      if (snap) {
+        lit[key] = snap
+        changed = true
+        continue
+      }
+      var overrides = ({})
+      var offName = Model.offKey(offPlain, dev)
+      if (offName !== "") {
+        var off = offPlain[offName]
+        if (off && off.color !== undefined) overrides.color = off.color
+        if (dev.modes && off && typeof off.mode === "number" && dev.modes[off.mode])
+          overrides.mode = dev.modes[off.mode].name
+      }
+      if (globalBrightness < 100) overrides.brightness = false
+      lit[key] = Model.lightingSnapshot(dev, overrides)
+      changed = true
+    }
+    if (changed) persistSettings({ lit: lit })
+  }
 
   // Settings keys earlier versions of this plugin wrote; silently dropped
   // whenever the entry is rewritten so a long-lived shell.json stays clean.
@@ -191,27 +326,20 @@ Panel {
 
   function setThemeSync(on) {
     var changes = { themeSync: on === true }
-    if (on === true && deviceAccent !== "") {
-      var next = {}
-      for (var i = 0; i < devices.length; i++) {
-        if (deviceIsOff(devices[i])) continue
-        next[Model.deviceKey(devices[i])] = deviceAccent
-      }
-      for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
-      changes.brightnessColors = next
+    // Both directions record the accent. Turning sync on means the accent is
+    // the choice. Turning it off means the accent is what was on screen, and
+    // that is what a later OpenRGB start has to put back.
+    if (deviceAccent !== "") changes.brightnessColors = accentBrightnessColors(null, "")
+    if (on === true && deviceAccent === "") {
+      persistSettings(changes)
+      return
     }
-    persistSettings(changes)
+    persistLit(changes, accentLit(offMap, null))
   }
 
   onDeviceAccentChanged: {
     if (!themeSync || deviceAccent === "") return
-    var next = {}
-    for (var i = 0; i < devices.length; i++) {
-      if (deviceIsOff(devices[i])) continue
-      next[Model.deviceKey(devices[i])] = deviceAccent
-    }
-    for (var k in brightnessColors) if (next[k] === undefined) next[k] = brightnessColors[k]
-    persistSettings({ brightnessColors: next })
+    persistLit({ brightnessColors: accentBrightnessColors(null, "") }, accentLit(offMap, null))
   }
 
   function toggleThemeSync() {
@@ -249,19 +377,11 @@ Panel {
     for (var i = 0; i < devices.length; i++) nextColors[Model.deviceKey(devices[i])] = color
     changes.brightnessColors = nextColors
     // "All devices" means all: painting everything relights what was off.
-    if (Object.keys(offMap).length > 0) changes.off = ({})
+    if (Model.objectKeys(offMap).length > 0) changes.off = ({})
     if (themeSync && color !== deviceAccent) changes.themeSync = false
-    persistSettings(changes)
-  }
-
-  function rememberBrightnessColor(dev, hex) {
-    var color = Model.hexOf(hex)
-    var key = Model.deviceKey(dev)
-    if (key === "" || color === "") return
-    var next = {}
-    for (var k in brightnessColors) next[k] = brightnessColors[k]
-    next[key] = color
-    persistSettings({ brightnessColors: next })
+    persistLit(changes, Model.litKeepingAccent(setting("lit"), devices, color, ({}), function() {
+      return ({ color: color })
+    }, globalBrightness < 100))
   }
 
   function previewGlobalBrightness(v) {
@@ -286,19 +406,26 @@ Panel {
     if (!dev || !dev.modes || !service) return
     if (!(modeIndex >= 0 && modeIndex < dev.modes.length)) return
     service.setMode(dev.index, modeIndex)
+    var chosen = dev.modes[modeIndex]
     var changes = ({})
-    var dirty = false
-    if (deviceIsOff(dev)) {
-      changes.off = offMapWithout(dev)
-      dirty = true
-    }
+    if (deviceIsOff(dev)) changes.off = offMapWithout(dev)
     // Choosing a hardware effect hands the color to the controller; the theme
-    // has nothing to govern there any more.
-    if (themeSync && !dev.modes[modeIndex].acceptsColor) {
-      changes.themeSync = false
-      dirty = true
+    // has nothing to govern there any more. The other devices were following
+    // the accent and stay on it.
+    var leaving = themeSync && !chosen.acceptsColor
+    if (leaving) changes.themeSync = false
+    if (themeSync) {
+      if (deviceAccent !== "") changes.brightnessColors = accentBrightnessColors(null, "")
+      var edited = Model.deviceKey(dev)
+      persistLit(changes, accentLit(changes.off || offMap, function(d) {
+        if (Model.deviceKey(d) !== edited) return null
+        var over = ({ mode: chosen.name })
+        if (chosen.acceptsColor && deviceAccent !== "") over.color = deviceAccent
+        return over
+      }))
+      return
     }
-    if (dirty) persistSettings(changes)
+    persistDeviceLit(dev, ({ mode: chosen.name }), changes)
   }
 
   function stepMode(index, delta) {
@@ -319,19 +446,13 @@ Panel {
   }
 
   function commitEditColor() {
-    if (!expandedDev || !service) return
-    service.setColor(expandedDev.index, editHex)
-    noteManualColor(expandedDev, editHex)
-    rememberBrightnessColor(expandedDev, editHex)
+    if (!expandedDev) return
+    commitDeviceColor(expandedDev, editHex)
   }
 
   function pickDeviceColor(hex) {
     editHsv = Model.rgbToHsv(hex)
-    if (expandedDev && service) {
-      service.setColor(expandedDev.index, Model.hexOf(hex))
-      noteManualColor(expandedDev, hex)
-      rememberBrightnessColor(expandedDev, hex)
-    }
+    if (expandedDev) commitDeviceColor(expandedDev, hex)
   }
 
   // Re-seed the sliders from the server only when it disagrees with what the
@@ -373,6 +494,7 @@ Panel {
     // A change made elsewhere (the OpenRGB app, another client) must reach the
     // open row's sliders and dot too, not only its subtitle.
     syncEditColor()
+    seedMissingLit()
   }
 
   implicitWidth: button.implicitWidth
@@ -1095,8 +1217,10 @@ Panel {
           suffix: "%"
           value: row.mode ? Model.rangeT(row.mode.brightness, row.mode.brightnessMin, row.mode.brightnessMax) * 100 : 0
           onReleased: function(v) {
-            if (root.service && row.dev && row.mode)
-              root.service.setBrightness(row.dev.index, Model.rangeValue(v / 100, row.mode.brightnessMin, row.mode.brightnessMax))
+            if (!(root.service && row.dev && row.mode)) return
+            var raw = Model.rangeValue(v / 100, row.mode.brightnessMin, row.mode.brightnessMax)
+            root.service.setBrightness(row.dev.index, raw)
+            if (!root.themeSync) root.persistDeviceLit(row.dev, ({ brightness: raw }), ({}))
           }
         }
 
@@ -1109,8 +1233,10 @@ Panel {
           suffix: "%"
           value: row.mode ? Model.rangeT(row.mode.speed, row.mode.speedMin, row.mode.speedMax) * 100 : 0
           onReleased: function(v) {
-            if (root.service && row.dev && row.mode)
-              root.service.setSpeed(row.dev.index, Model.rangeValue(v / 100, row.mode.speedMin, row.mode.speedMax))
+            if (!(root.service && row.dev && row.mode)) return
+            var raw = Model.rangeValue(v / 100, row.mode.speedMin, row.mode.speedMax)
+            root.service.setSpeed(row.dev.index, raw)
+            if (!root.themeSync) root.persistDeviceLit(row.dev, ({ speed: raw }), ({}))
           }
         }
 
