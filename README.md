@@ -128,9 +128,20 @@ live while you drag. Brightness and speed where the mode has them, always as
 a percentage, even on controllers that count their speed backwards. Save to
 device appears for modes the hardware can keep across reboots.
 
+Direct mode, and plenty of others, cannot be written into the device, so
+those choices would otherwise die with the OpenRGB process. The plugin
+remembers the mode, color, brightness and speed of each device and puts
+them back when OpenRGB starts again. The server accepts clients while it
+is still detecting hardware, and a controller often resets a moment after
+it first appears, so the restore waits until the device list stops
+changing and keeps writing until a read-back matches.
+
 Two switches look after themselves. *Follow the theme accent* turns itself off
 when you pick a color of your own or put a device on one of its hardware
 effects. Your choice wins, and the next theme change will not paint over it.
+While the switch is on, the accent is what is remembered. Turning it off,
+including by picking one device's color, leaves every other device on that
+accent. It does not put them back to the colors they had before.
 Stealth is simply "every device is off", so powering one device back on by
 hand clears the switch too.
 
@@ -206,6 +217,14 @@ behind stealth and the power buttons, mode and color for each device you
 switched off, plus `globalBrightness` (0–100, default 100) and
 `brightnessColors` for the dimmer. They live in `shell.json` so a shell
 restart cannot leave a device dark with no record of how to bring it back.
+
+An internal `lit` key holds the same kind of snapshot for devices that are
+on: mode, color, brightness and speed. It is keyed the same way as `off`,
+by `Model.deviceKey` (the name, plus the I2C address when the device has
+one), so two sticks of the same model stay distinct and a hidraw path that
+moves after a reboot does not matter. A color changed only in the OpenRGB
+app is not copied into `lit`, and the next start puts the remembered color
+back. While *Follow the theme accent* is on, `lit` stores that accent.
 
 ## How it works
 
