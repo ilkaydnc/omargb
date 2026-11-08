@@ -341,7 +341,9 @@ function lookupSnap(lit, dev) {
   return null
 }
 
-function snapMatches(dev, snap) {
+// `skipBrightness`: the global dimmer owns per-mode brightness below 100%, so
+// a read-back there is the dimmed value, not the one `lit` stored.
+function snapMatches(dev, snap, skipBrightness) {
   if (!dev || !snap) return false
   var modeName = snap.mode ? String(snap.mode) : ""
   var color = hexOf(snap.color)
@@ -350,11 +352,28 @@ function snapMatches(dev, snap) {
   if (modeName !== "" && (!current || current.name !== modeName)) return false
   if (color !== "" && hexOf(dev.color) !== color) return false
   var target = mode || current
-  if (target && target.hasBrightness && typeof snap.brightness === "number"
+  if (!skipBrightness && target && target.hasBrightness && typeof snap.brightness === "number"
       && Number(target.brightness) !== Number(snap.brightness)) return false
   if (target && target.hasSpeed && typeof snap.speed === "number"
       && Number(target.speed) !== Number(snap.speed)) return false
   return true
+}
+
+// Full-bright colors for the dimmer after a reconnect. `brightnessColors` is
+// the base, so a device with no `lit` entry yet is not dimmed a second time
+// from its already-dimmed read-back. A remembered color wins over it.
+function restoreColorMap(devices, brightnessColors, lit, offMap) {
+  var map = brightnessColorMap(devices, brightnessColors)
+  lit = plain(lit)
+  offMap = plain(offMap)
+  for (var i = 0; i < (devices || []).length; i++) {
+    var dev = devices[i]
+    if (offKey(offMap, dev) !== "") continue
+    var snap = lookupSnap(lit, dev)
+    var hex = snap ? hexOf(snap.color) : ""
+    if (hex !== "") map[String(dev.index)] = hex
+  }
+  return map
 }
 
 // What to put back after OpenRGB starts again. Direct, and plenty of other

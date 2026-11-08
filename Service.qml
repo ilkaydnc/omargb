@@ -392,7 +392,9 @@ Item {
     restoreSettled = true
     restoreTimer.stop()
   }
-  onSettingsChanged: if (!themeSync && !restoreHold) applyRemembered()
+  // Only inside the restore window. Once it has settled, a settings write must
+  // not replay `lit` over a change made in the OpenRGB app.
+  onSettingsChanged: if (!themeSync && !restoreHold && !restoreSettled) applyRemembered()
 
   // Put the stored mode and color back. A device counts as done only when a
   // later read-back matches, so a controller that resets after the first
@@ -410,15 +412,16 @@ Item {
       restoreInFlight = false
     }
     // The bridge starts at full brightness. Set the dimmer from the remembered
-    // colors before the per-device writes, so those writes are scaled and the
-    // dimmer does not first flash the unrelated brightnessColors map.
+    // colors before the per-device writes, so those writes are scaled.
     if (!restoreDimmed && globalBrightness < 100) {
       restoreDimmed = true
       applyGlobalBrightness(globalBrightness, true, null, rememberedColorMap())
     }
     var lit = Model.plain(litRestore)
     var off = Model.plain(offRestore)
-    var expired = restoreDeadlineMs > 0 && Date.now() >= restoreDeadlineMs
+    // No deadline means no restore was armed on this connection.
+    var expired = restoreDeadlineMs <= 0 || Date.now() >= restoreDeadlineMs
+    var dimmed = globalBrightness < 100
     var missed = []
     var sent = false
     for (var i = 0; i < devices.length; i++) {
@@ -428,7 +431,7 @@ Item {
       if (Model.offKey(off, dev) !== "") continue
       var snap = Model.lookupSnap(lit, dev)
       if (!snap) continue
-      if (Model.snapMatches(dev, snap)) continue
+      if (Model.snapMatches(dev, snap, dimmed)) continue
       if (expired) {
         missed.push(String(dev.name || key))
         continue
@@ -446,17 +449,7 @@ Item {
   // Logical colors for the dimmer. Per-device brightness is omitted while the
   // slider is below 100%, because the slider owns that field.
   function rememberedColorMap() {
-    var map = ({})
-    var lit = Model.plain(litRestore)
-    var off = Model.plain(offRestore)
-    for (var i = 0; i < devices.length; i++) {
-      var dev = devices[i]
-      if (Model.offKey(off, dev) !== "") continue
-      var snap = Model.lookupSnap(lit, dev)
-      var hex = snap ? Model.hexOf(snap.color) : ""
-      if (hex !== "") map[String(dev.index)] = hex
-    }
-    return map
+    return Model.restoreColorMap(devices, brightnessColors, litRestore, offRestore)
   }
 
   function applyLitSnap(dev, snap) {

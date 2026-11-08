@@ -59,7 +59,7 @@ test("brightnessColorMap never flattens a multi-color device", () => {
   assert.equal(brightnessColorMap(devices, {})["1"], undefined)
 })
 
-const { plain, objectKeys, lookupSnap, snapMatches, lightingSnapshot, litKeepingAccent } = context
+const { plain, objectKeys, lookupSnap, snapMatches, lightingSnapshot, litKeepingAccent, restoreColorMap } = context
 
 test("plain keeps keys that are not identifiers", () => {
   const lit = { "ENE DRAM@0x71": { mode: "Static", color: "#00e5ff" } }
@@ -145,4 +145,28 @@ test("litKeepingAccent leaves an off device alone and keeps the accent on the re
   assert.equal(next["ENE DRAM@0x71"].mode, "Static")
   assert.equal(next["GPU@0x75"].color, "#ff00c8")
   assert.equal(next["GPU@0x75"].brightness, 10)
+})
+
+test("snapMatches ignores brightness while the global dimmer owns it", () => {
+  const dev = {
+    color: "#ff00c8",
+    activeMode: 0,
+    modes: [{ name: "Static", hasBrightness: true, brightness: 128, hasSpeed: false }],
+  }
+  const snap = { mode: "Static", color: "#ff00c8", brightness: 255 }
+  assert.equal(snapMatches(dev, snap), false)
+  assert.equal(snapMatches(dev, snap, true), true)
+})
+
+test("restoreColorMap falls back to brightnessColors for devices without lit", () => {
+  const dram = { index: 0, name: "ENE DRAM", location: "I2C: bus, address 0x71", color: "#000080" }
+  const gpu = { index: 1, name: "GPU", location: "I2C: bus, address 0x75", color: "#800000" }
+  const map = restoreColorMap(
+    [dram, gpu],
+    { "ENE DRAM@0x71": "#0000ff", "GPU@0x75": "#ff0000" },
+    { "GPU@0x75": { mode: "Static", color: "#00ff00" } },
+    {},
+  )
+  assert.equal(map["0"], "#0000ff")
+  assert.equal(map["1"], "#00ff00")
 })
