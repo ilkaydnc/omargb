@@ -273,6 +273,165 @@ function offKey(map, dev) {
   return ""
 }
 
+// Keys inside `lit` are device names (`ENE DRAM@0x71`, names with spaces).
+// A `var` property that arrived from shell.json is sometimes a map whose
+// bracket lookup hides those keys, while for-in still lists them. Round-trip
+// through JSON so later lookups see a real object.
+function objectKeys(value) {
+  var out = []
+  if (!value || typeof value !== "object") return out
+  var seen = ({})
+  var listed = []
+  try { listed = Object.keys(value) } catch (e) { listed = [] }
+  var i
+  for (i = 0; i < listed.length; i++) {
+    out.push(String(listed[i]))
+    seen[String(listed[i])] = true
+  }
+  for (var k in value) {
+    if (seen[String(k)]) continue
+    out.push(String(k))
+    seen[String(k)] = true
+  }
+  return out
+}
+
+function plain(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return ({})
+  try {
+    var text = JSON.stringify(value)
+    if (text && text.charAt(0) === "{") {
+      var parsed = JSON.parse(text)
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed
+    }
+  } catch (e) {}
+  var copy = ({})
+  var keys = objectKeys(value)
+  for (var i = 0; i < keys.length; i++) copy[keys[i]] = value[keys[i]]
+  return copy
+}
+
+function modeByName(dev, name) {
+  if (!dev || !dev.modes || !name) return null
+  for (var i = 0; i < dev.modes.length; i++) if (dev.modes[i].name === name) return dev.modes[i]
+  return null
+}
+
+// Exact key, then a unique name match, then the Razer dongle case where the
+// same device is "Keyboard" or "Keyboard (Mouse)" depending on what else was
+// awake when OpenRGB enumerated it.
+function lookupSnap(lit, dev) {
+  lit = plain(lit)
+  if (!dev) return null
+  var key = deviceKey(dev)
+  if (key !== "" && lit[key]) return lit[key]
+  var name = String(dev.name || "")
+  var byName = []
+  var byPrefix = []
+  var keys = objectKeys(lit)
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i]
+    if (k === key && lit[k]) return lit[k]
+    if (name !== "" && k === name) byName.push(lit[k])
+    else if (name !== "" && (k.indexOf(name + " (") === 0 || name.indexOf(k + " (") === 0))
+      byPrefix.push(lit[k])
+  }
+  if (byName.length === 1) return byName[0]
+  if (byPrefix.length === 1) return byPrefix[0]
+  return null
+}
+
+// `skipBrightness`: the global dimmer owns per-mode brightness below 100%, so
+// a read-back there is the dimmed value, not the one `lit` stored.
+function snapMatches(dev, snap, skipBrightness) {
+  if (!dev || !snap) return false
+  var modeName = snap.mode ? String(snap.mode) : ""
+  var color = hexOf(snap.color)
+  var mode = modeByName(dev, modeName)
+  var current = activeMode(dev)
+  if (modeName !== "" && (!current || current.name !== modeName)) return false
+  if (color !== "" && hexOf(dev.color) !== color) return false
+  var target = mode || current
+  if (!skipBrightness && target && target.hasBrightness && typeof snap.brightness === "number"
+      && Number(target.brightness) !== Number(snap.brightness)) return false
+  if (target && target.hasSpeed && typeof snap.speed === "number"
+      && Number(target.speed) !== Number(snap.speed)) return false
+  return true
+}
+
+// Full-bright colors for the dimmer after a reconnect. `brightnessColors` is
+// the base, so a device with no `lit` entry yet is not dimmed a second time
+// from its already-dimmed read-back. A remembered color wins over it.
+function restoreColorMap(devices, brightnessColors, lit, offMap) {
+  var map = brightnessColorMap(devices, brightnessColors)
+  lit = plain(lit)
+  offMap = plain(offMap)
+  for (var i = 0; i < (devices || []).length; i++) {
+    var dev = devices[i]
+    if (offKey(offMap, dev) !== "") continue
+    var snap = lookupSnap(lit, dev)
+    var hex = snap ? hexOf(snap.color) : ""
+    if (hex !== "") map[String(dev.index)] = hex
+  }
+  return map
+}
+
+// What to put back after OpenRGB starts again. Direct, and plenty of other
+// modes, cannot be written to the device, so this is the copy that lasts.
+// `overrides.brightness === false` leaves brightness out: the global dimmer
+// owns it, and a dimmed read-back must not be stored as the user's setting.
+function lightingSnapshot(dev, overrides) {
+  overrides = overrides || ({})
+  var named = overrides.mode ? modeByName(dev, String(overrides.mode)) : null
+  var mode = named || activeMode(dev)
+  var snap = ({})
+  if (mode && mode.name) snap.mode = String(mode.name)
+  else if (overrides.mode) snap.mode = String(overrides.mode)
+  if (!mode || mode.acceptsColor) {
+    var color = hexOf(overrides.color !== undefined ? overrides.color : (dev ? dev.color : ""))
+    if (color !== "") snap.color = color
+  }
+  if (mode && mode.hasBrightness && overrides.brightness !== false) {
+    var brightness = typeof overrides.brightness === "number" ? overrides.brightness : mode.brightness
+    if (typeof brightness === "number") snap.brightness = Math.round(brightness)
+  }
+  if (mode && mode.hasSpeed) {
+    var speed = typeof overrides.speed === "number" ? overrides.speed : mode.speed
+    if (typeof speed === "number") snap.speed = Math.round(speed)
+  }
+  return snap
+}
+
+// Copy `lit`, then record `accent` on every device that is not switched off.
+// `overrideFor(dev)` supplies a color or mode just chosen for one device;
+// everyone else keeps the accent, and off devices keep the entry they had.
+function litKeepingAccent(lit, devices, accent, offMap, overrideFor, omitBrightness) {
+  var next = plain(lit)
+  offMap = plain(offMap)
+  var accentHex = hexOf(accent)
+  devices = devices || []
+  for (var i = 0; i < devices.length; i++) {
+    var dev = devices[i]
+    var key = deviceKey(dev)
+    if (!dev || key === "") continue
+    if (offKey(offMap, dev) !== "") continue
+    var chosen = null
+    if (typeof overrideFor === "function") chosen = overrideFor(dev)
+    var override = ({})
+    if (chosen) {
+      if (chosen.mode !== undefined) override.mode = chosen.mode
+      if (chosen.color !== undefined) override.color = chosen.color
+      if (typeof chosen.brightness === "number") override.brightness = chosen.brightness
+      if (typeof chosen.speed === "number") override.speed = chosen.speed
+    } else if (accentHex !== "") {
+      override.color = accentHex
+    }
+    if (omitBrightness) override.brightness = false
+    next[key] = lightingSnapshot(dev, override)
+  }
+  return next
+}
+
 function modeOptions(dev) {
   var out = []
   if (!dev || !dev.modes) return out
