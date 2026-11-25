@@ -27,6 +27,7 @@ Events (stdout):
 
 Commands (stdin), all optionally carrying an "id" echoed in the result:
     {"op":"refresh"}
+    {"op":"rescan"}                                          # ask server to re-detect hardware (SDK v5+)
     {"op":"connect","host":"127.0.0.1","port":6742}
     {"op":"set_color","device":0,"color":"#rrggbb"}          # whole device
     {"op":"set_color","device":0,"zone":1,"color":"#rrggbb"} # one zone
@@ -76,6 +77,7 @@ PKT_REQUEST_CONTROLLER_DATA = 1
 PKT_REQUEST_PROTOCOL_VERSION = 40
 PKT_SET_CLIENT_NAME = 50
 PKT_DEVICE_LIST_UPDATED = 100
+PKT_REQUEST_RESCAN_DEVICES = 140
 PKT_REQUEST_PROFILE_LIST = 150
 PKT_REQUEST_LOAD_PROFILE = 151
 PKT_REQUEST_SAVE_PROFILE = 152
@@ -974,6 +976,13 @@ class Bridge:
         if op == "refresh":
             self.refresh_all()
             self.refresh_profiles()
+            return
+        if op == "rescan":
+            if self.server_version >= 5:
+                self.send(0, PKT_REQUEST_RESCAN_DEVICES)
+            else:
+                self.refresh_all()
+                self.refresh_profiles()
             return
         if op == "profiles":
             self.refresh_profiles()

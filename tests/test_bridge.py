@@ -256,6 +256,69 @@ class BridgeTest(unittest.TestCase):
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 stream.close()
 
+    def test_rescan_on_v4_server_falls_back_to_refresh(self):
+        state, code = self.once({"op": "rescan"})
+        self.assertEqual(code, 0)
+        self.assertEqual(self.server.rescans, 0)
+        self.assertEqual(len(state["devices"]), 2)
+
+    def test_rescan_on_v5_server_sends_packet_and_reloads_devices(self):
+        v5 = MockServer(server_protocol=5).start()
+        try:
+            def add_headset():
+                v5.devices.append({
+                    "type": 8, "name": "Mock G733", "vendor": "Logitech", "description": "Wireless headset",
+                    "version": "1.0", "serial": "HS-1", "location": "HID: /dev/hidraw11",
+                    "activeMode": 0,
+                    "modes": [
+                        {
+                            "name": "Direct", "value": 0, "flags": bridge.MODE_FLAG_HAS_PER_LED_COLOR,
+                            "speedMin": 0, "speedMax": 0, "speed": 0,
+                            "brightnessMin": 0, "brightnessMax": 0, "brightness": 0,
+                            "colorsMin": 0, "colorsMax": 0,
+                            "direction": 0, "colorMode": bridge.MODE_COLORS_PER_LED, "colors": [],
+                        }
+                    ],
+                    "zones": [
+                        {"name": "Primary", "type": 0, "ledsMin": 1, "ledsMax": 1, "ledsCount": 1,
+                         "matrix": None, "segments": []},
+                    ],
+                    "leds": ["LED 0"],
+                    "colors": ["#00ff00"],
+                })
+
+            v5.on_rescan = add_headset
+            proc = subprocess.Popen([sys.executable, BRIDGE, "--port", str(v5.port)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                json.loads(proc.stdout.readline())  # hello
+                initial = json.loads(proc.stdout.readline())  # state
+                self.assertEqual(len(initial["devices"]), 2)
+                json.loads(proc.stdout.readline())  # profiles
+
+                proc.stdin.write(json.dumps({"op": "rescan", "id": 11}) + "\n")
+                proc.stdin.flush()
+
+                result = json.loads(proc.stdout.readline())
+                self.assertEqual(result, {"event": "result", "op": "rescan", "ok": True, "id": 11})
+                updated = json.loads(proc.stdout.readline())
+                self.assertEqual(updated["event"], "state")
+                self.assertEqual(v5.rescans, 1)
+                self.assertEqual([d["name"] for d in updated["devices"]],
+                                 ["Mock Apex Pro", "Mock LED Strip", "Mock G733"])
+
+                proc.stdin.write(json.dumps({"op": "quit"}) + "\n")
+                proc.stdin.flush()
+                self.assertEqual(proc.wait(timeout=5), 0)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    stream.close()
+        finally:
+            v5.stop()
+
     def test_connection_refused_is_reported(self):
         self.server.stop()
         proc = subprocess.Popen([sys.executable, BRIDGE, "--port", str(self.server.port)],
