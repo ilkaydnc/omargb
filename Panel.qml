@@ -225,6 +225,7 @@ Panel {
   readonly property string heroStatus: {
     if (!service) return "Service not loaded"
     if (connected) {
+      if (service.rescanning) return "Rescanning devices…"
       if (devices.length === 0) return "No devices found"
       return Model.plural(devices.length, "device")
     }
@@ -365,7 +366,7 @@ Panel {
   }
 
   function refresh() {
-    if (service) service.refresh()
+    if (service) service.rescan()
   }
 
   function setAll(hex) {
@@ -820,10 +821,10 @@ Panel {
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
                   iconText: "󰑐"
-                  tooltipText: "Refresh devices"
+                  tooltipText: root.service && root.service.rescanning ? "Rescanning devices…" : "Rescan devices"
                   foreground: root.fg
                   fontFamily: root.fontFamily
-                  enabled: root.connected
+                  enabled: root.connected && !(root.service && root.service.rescanning)
                   onClicked: root.refresh()
                 }
               }

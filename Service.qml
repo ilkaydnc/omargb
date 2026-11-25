@@ -28,12 +28,14 @@ Item {
   property string host: "127.0.0.1"
   property int port: 6742
   property int protocol: 0
+  property int serverProtocol: 0
   property var devices: []
   property var profiles: []
   property string lastError: ""
   property string openrgbBinary: ""
   property bool bridgeReady: false
   property bool serverStarting: false
+  property bool rescanning: false
   property string actionError: ""
 
   readonly property int deviceCount: devices.length
@@ -127,6 +129,11 @@ Item {
       break
     case "result":
       restoreInFlight = false
+      if (msg.op === "rescan" && (msg.ok === false || serverProtocol < 5)) {
+        rescanning = false
+        rescanSettleTimer.stop()
+        rescanTimeoutTimer.stop()
+      }
       if (msg.ok === false) {
         actionError = String(msg.error || "OpenRGB rejected the command")
         actionErrorTimer.restart()
@@ -142,6 +149,7 @@ Item {
     host = String(msg.host || host)
     port = Number(msg.port) || port
     protocol = Number(msg.protocol) || 0
+    serverProtocol = Number(msg.serverProtocol) || 0
     if ("openrgbBinary" in msg) openrgbBinary = msg.openrgbBinary ? String(msg.openrgbBinary) : ""
     if (msg.connected) {
       connected = true
@@ -151,6 +159,10 @@ Item {
       restoreInFlight = false
       devices = Array.isArray(msg.devices) ? msg.devices : []
       var signature = deviceSignatureOf(devices)
+      if (rescanning && signature !== deviceSignature) {
+        if (devices.length > 0) rescanSettleTimer.restart()
+        else rescanSettleTimer.stop()
+      }
       if (themeSync) {
         // The accent is painted by scheduleThemeApply. Remembering `lit` is
         // the panel's job; applying it here would fight the theme.
@@ -170,6 +182,9 @@ Item {
       }
     } else {
       connected = false
+      rescanning = false
+      rescanSettleTimer.stop()
+      rescanTimeoutTimer.stop()
       restoreInFlight = false
       restoreSettled = false
       restoreHold = false
@@ -224,6 +239,14 @@ Item {
 
   function refresh() {
     send({ op: "refresh" })
+  }
+
+  function rescan() {
+    if (!connected || rescanning) return
+    rescanning = true
+    rescanSettleTimer.stop()
+    rescanTimeoutTimer.restart()
+    send({ op: "rescan" })
   }
 
   // ---- Device commands
@@ -525,6 +548,28 @@ Item {
   }
 
   Timer {
+    // Clears rescanning once devices stop changing for a few seconds.
+    id: rescanSettleTimer
+    interval: 4000
+    repeat: false
+    onTriggered: {
+      root.rescanning = false
+      rescanTimeoutTimer.stop()
+    }
+  }
+
+  Timer {
+    // Safety ceiling so the button never stays disabled if a scan stalls.
+    id: rescanTimeoutTimer
+    interval: 35000
+    repeat: false
+    onTriggered: {
+      root.rescanning = false
+      rescanSettleTimer.stop()
+    }
+  }
+
+  Timer {
     // Clears the "starting…" state if the server never shows up.
     id: serverStartTimer
     interval: 15000
@@ -557,6 +602,9 @@ Item {
     onExited: function(exitCode, exitStatus) {
       root.bridgeReady = false
       root.connected = false
+      root.rescanning = false
+      rescanSettleTimer.stop()
+      rescanTimeoutTimer.stop()
       root.restoreInFlight = false
       root.restoreSettled = false
       root.restoreHold = false

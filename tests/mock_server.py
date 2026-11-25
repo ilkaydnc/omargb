@@ -141,12 +141,15 @@ def serialize_device(dev, version):
 
 
 class MockServer:
-    def __init__(self, host="127.0.0.1", port=0):
+    def __init__(self, host="127.0.0.1", port=0, server_protocol=SERVER_PROTOCOL):
+        self.server_protocol = server_protocol
         self.devices = make_devices()
         self.profiles = ["Default", "Gaming"]
         self.loaded_profiles = []
         self.saved_profiles = []
         self.saved_modes = []
+        self.rescans = 0
+        self.on_rescan = None
         self.client_name = None
         self.client_version = 0
         self.lock = threading.Lock()
@@ -213,10 +216,15 @@ class MockServer:
 
     def handle(self, conn, dev_idx, pkt_id, data):
         if pkt_id == p.PKT_REQUEST_PROTOCOL_VERSION:
-            self.client_version = min(SERVER_PROTOCOL, struct.unpack("<I", data[:4])[0])
-            self.reply(conn, 0, pkt_id, struct.pack("<I", SERVER_PROTOCOL))
+            self.client_version = min(self.server_protocol, struct.unpack("<I", data[:4])[0])
+            self.reply(conn, 0, pkt_id, struct.pack("<I", self.server_protocol))
         elif pkt_id == p.PKT_SET_CLIENT_NAME:
             self.client_name = data.rstrip(b"\0").decode()
+        elif pkt_id == p.PKT_REQUEST_RESCAN_DEVICES:
+            self.rescans += 1
+            if callable(self.on_rescan):
+                self.on_rescan()
+            self.reply(conn, 0, p.PKT_DEVICE_LIST_UPDATED)
         elif pkt_id == p.PKT_REQUEST_CONTROLLER_COUNT:
             self.reply(conn, 0, pkt_id, struct.pack("<I", len(self.devices)))
         elif pkt_id == p.PKT_REQUEST_CONTROLLER_DATA:
